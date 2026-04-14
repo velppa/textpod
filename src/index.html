@@ -28,6 +28,7 @@
 
         body {
             font-family: system-ui, -apple-system, sans-serif;
+            font-size: 150%;
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
@@ -107,6 +108,15 @@
         .note svg {
             max-width: 100%;
         }
+
+        footer {
+            margin-top: 3em;
+            padding-top: 1em;
+            border-top: 1px solid var(--color-secondary);
+            font-size: 0.8em;
+            color: var(--color-secondary);
+            text-align: center;
+        }
     </style>
 </head>
 
@@ -115,6 +125,16 @@
     <textarea id="editor"
         placeholder="Ctrl+Enter to save.&#10;Type / to search.&#10;Drag & drop files to attach.&#10;Start links with + to save local copies."></textarea>
     <div id="submitContainer"><button id="submitButton">Submit</button></div>
+
+    <script>
+        const READONLY = {{READONLY}};
+        if (READONLY) {
+            const ed = document.getElementById('editor');
+            ed.placeholder = 'Type to search.';
+            ed.style.height = '50px';
+            document.getElementById('submitContainer').style.display = 'none';
+        }
+    </script>
     <div id="notes"></div>
 
     <script>
@@ -124,6 +144,11 @@
         let searchTimeout = null;
 
         window.addEventListener('load', async () => {
+            const params = new URLSearchParams(window.location.search);
+            const q = params.get('q');
+            if (q) {
+                editor.value = READONLY ? q : '/' + q;
+            }
             displayNotes();
         });
 
@@ -140,8 +165,8 @@
                     <div class="note">
                         ${note.html}
                         <div class="noteMetadata">
-                            <time datetime="${note.timestamp}">${note.timestamp}</time>
-                            [<a href="#" onclick="deleteNote(${i})">delete</a>]
+                            <a href="/note/${note.id}"><time datetime="${note.timestamp}">${note.timestamp}</time></a>
+                            ${READONLY ? '' : `[<a href="#" onclick="deleteNote('${note.id}')">delete</a>]`}
                         </div>
                     </div>`)
                     .reverse() // TODO implement user-specified sorting (reverse chronological by default)
@@ -167,14 +192,14 @@
             }
         }
 
-        // deletes note with index `idx`
-        async function deleteNote(idx) {
+        // deletes note by id
+        async function deleteNote(id) {
             event.preventDefault();
             if (!confirm('Are you sure you want to delete this note?')) {
                 return;
             }
 
-            deleteResponse = await fetch(`/notes/${idx}`, {
+            deleteResponse = await fetch(`/notes/${id}`, {
                 method: 'DELETE'
             });
 
@@ -187,12 +212,13 @@
 
         editor.addEventListener('input', async (e) => {
             const text = editor.value;
-            if (text.startsWith('/')) {
+            const isSearch = READONLY || text.startsWith('/');
+            if (isSearch) {
                 if (searchTimeout) {
                     clearTimeout(searchTimeout);
                 }
                 searchTimeout = setTimeout(async () => {
-                    const query = text.slice(1);
+                    const query = text.startsWith('/') ? text.slice(1) : text;
                     // Update URL with search parameter
                     const newUrl = query
                         ? `${window.location.pathname}?q=${encodeURIComponent(query)}`
@@ -209,24 +235,27 @@
         });
 
         editor.addEventListener('keydown', async (e) => {
-            if (e.ctrlKey && e.key === 'Enter' && !editor.value.startsWith('/')) {
+            if (!READONLY && e.ctrlKey && e.key === 'Enter' && !editor.value.startsWith('/')) {
                 saveNotes();
             }
         });
 
-        submitButton.addEventListener('click', async (e) => {
-            saveNotes();
-        })
+        if (!READONLY) {
+            submitButton.addEventListener('click', async (e) => {
+                saveNotes();
+            });
+        }
 
         editor.addEventListener('paste', (e) => {
             console.log(e);
         });
 
         editor.addEventListener('dragover', (e) => {
-            e.preventDefault();
+            if (!READONLY) e.preventDefault();
         });
 
         editor.addEventListener('drop', async (e) => {
+            if (READONLY) return;
             e.preventDefault();
 
             const files = e.dataTransfer.files;
@@ -262,6 +291,7 @@
 
 
     </script>
+    <footer>Textpod</footer>
 </body>
 
 </html>

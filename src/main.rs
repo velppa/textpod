@@ -1,7 +1,7 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, State},
-    http::StatusCode,
-    response::{Html, IntoResponse},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -19,6 +19,8 @@ use std::{
     process,
     sync::{Arc, Mutex},
 };
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use regex::Regex;
 use tokio::process::Command;
 use tokio::spawn;
 use tower_http::services::ServeDir;
@@ -43,10 +45,14 @@ struct Args {
     /// Save notes in FILE
     #[arg(short = 'f', long, value_name = "FILE", default_value = "notes.md")]
     notes_file: PathBuf,
+    /// Require token for write access; without it the UI is read-only
+    #[arg(short, long)]
+    token: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Note {
+    id: String,
     timestamp: String,
     content: String,
     html: String,
@@ -57,6 +63,7 @@ struct AppState {
     html: String,
     notes: Arc<Mutex<Vec<Note>>>,
     notes_file: PathBuf,
+    token: Option<String>,
 }
 
 const CONTENT_LENGTH_LIMIT: usize = 500 * 1024 * 1024; // allow uploading up to 500mb files... overkill?
@@ -94,16 +101,58 @@ async fn main() {
         html,
         notes,
         notes_file: args.notes_file,
+        token: args.token,
+    };
+
+    // Watch notes file for external changes
+    let watch_notes = state.notes.clone();
+    let watch_file = state.notes_file.clone();
+    let watch_file_canon = fs::canonicalize(&watch_file).unwrap_or_else(|_| watch_file.clone());
+    let _watcher = {
+        let (tx, rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
+        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())
+            .expect("Failed to create file watcher");
+        let watch_dir = watch_file_canon.parent().unwrap_or(std::path::Path::new("."));
+        watcher
+            .watch(watch_dir, RecursiveMode::NonRecursive)
+            .expect("Failed to watch notes file");
+        spawn(async move {
+            let rx = rx;
+            loop {
+                match tokio::task::block_in_place(|| rx.recv()) {
+                    Ok(Ok(event)) => {
+                        let dominated = matches!(
+                            event.kind,
+                            EventKind::Modify(_) | EventKind::Create(_)
+                        );
+                        let affects_file = event
+                            .paths
+                            .iter()
+                            .any(|p| {
+                                fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == watch_file_canon
+                            });
+                        if dominated && affects_file {
+                            let new_notes = load_notes(&watch_file);
+                            let mut notes = watch_notes.lock().unwrap();
+                            *notes = new_notes;
+                            info!("Reloaded notes from disk ({} notes)", notes.len());
+                        }
+                    }
+                    Ok(Err(e)) => error!("File watch error: {}", e),
+                    Err(_) => break,
+                }
+            }
+        });
+        watcher // keep alive
     };
 
     let app = Router::new()
         .route("/", get(index))
         .route("/notes", get(get_notes).post(save_note))
-        .route(
-            "/notes/:index",
-            get(get_note_by_index).delete(delete_note_by_index),
-        ) // TODO PUT/PATCH
+        .route("/notes/:id", get(get_note_by_id).put(update_note_by_id).delete(delete_note_by_id))
+        .route("/note/:id", get(note_page))
         .route("/upload", post(upload_file))
+        .fallback(get(fallback_md))
         .layer(DefaultBodyLimit::max(CONTENT_LENGTH_LIMIT))
         .nest_service("/attachments", ServeDir::new("attachments"))
         .with_state(state);
@@ -164,9 +213,12 @@ fn load_notes(file: &PathBuf) -> Vec<Note> {
                         block.to_string(),
                     ),
                 };
+                let content = content.trim_end_matches("\n---").trim().to_string();
 
                 let html = md_to_html(&content);
+                let id = timestamp_to_id(&timestamp);
                 Note {
+                    id,
                     timestamp,
                     content: content.to_string(),
                     html,
@@ -179,8 +231,92 @@ fn load_notes(file: &PathBuf) -> Vec<Note> {
 }
 
 // route / (root)
-async fn index(State(state): State<AppState>) -> Html<String> {
-    Html(state.html)
+async fn index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    // If ?token=X is provided and matches, set cookie and redirect to /
+    if let Some(provided) = params.get("token") {
+        if state.token.as_deref() == Some(provided.as_str()) {
+            return (
+                StatusCode::SEE_OTHER,
+                [
+                    (header::SET_COOKIE, format!("textpod_token={}; Path=/; HttpOnly; SameSite=Strict", provided)),
+                    (header::LOCATION, "/".to_string()),
+                ],
+            )
+                .into_response();
+        }
+    }
+
+    let readonly = match &state.token {
+        None => false,
+        Some(token) => !has_valid_token(&headers, token),
+    };
+
+    let html = state.html.replace("{{READONLY}}", if readonly { "true" } else { "false" });
+    Html(html).into_response()
+}
+
+fn get_cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(';'))
+        .map(|s| s.trim())
+        .find_map(|cookie| {
+            let mut parts = cookie.splitn(2, '=');
+            let key = parts.next()?;
+            let val = parts.next()?;
+            if key == name { Some(val) } else { None }
+        })
+}
+
+fn has_valid_token(headers: &HeaderMap, token: &str) -> bool {
+    // Check cookie
+    if let Some(cookie_token) = get_cookie_value(headers, "textpod_token") {
+        if cookie_token == token {
+            return true;
+        }
+    }
+    // Check Authorization: Bearer header
+    if let Some(auth) = headers.get(header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth.to_str() {
+            if let Some(bearer_token) = auth_str.strip_prefix("Bearer ") {
+                if bearer_token == token {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn require_auth(headers: &HeaderMap, token: &Option<String>) -> Result<(), StatusCode> {
+    match token {
+        None => Ok(()),
+        Some(t) => {
+            if has_valid_token(headers, t) {
+                Ok(())
+            } else {
+                Err(StatusCode::UNAUTHORIZED)
+            }
+        }
+    }
+}
+
+// Fallback: redirect *.md requests to /?q=filename.md
+async fn fallback_md(uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    if path.ends_with(".md") {
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        let location = format!("/?q={}", urlencoding::encode(filename));
+        (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 // GET /notes
@@ -189,86 +325,164 @@ async fn get_notes(State(state): State<AppState>) -> Json<Vec<Note>> {
     Json(notes.iter().cloned().collect::<Vec<_>>())
 }
 
-// GET /notes/:index
-async fn get_note_by_index(
+// GET /note/:id (HTML page)
+async fn note_page(
     State(state): State<AppState>,
-    Path(index): Path<usize>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+    Path(id): Path<String>,
+) -> Result<Html<String>, (StatusCode, String)> {
     let notes = state.notes.lock().unwrap();
-    if index >= notes.len() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("request for non-existent note #{index}"),
-        ));
+    match notes.iter().find(|n| n.id == id) {
+        Some(note) => {
+            let page = format!(
+                r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Note {id} - Textpod</title>
+    <meta name="color-scheme" content="light dark" />
+    <style>
+        body {{
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 150%;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .note code {{ padding: 0.25em; background-color: #eee; }}
+        .note pre {{ padding: 0.5em; background-color: #eee; }}
+        .note pre code {{ padding: 0; background-color: transparent; }}
+        .note img, .note video {{ max-width: 100%; }}
+        .metadata {{ font-family: monospace; color: #888; margin-top: 2em; }}
+        .metadata a {{ color: #888; text-decoration: none; }}
+        .metadata a:hover {{ text-decoration: underline; }}
+    </style>
+</head>
+<body>
+    <div class="note">{html}</div>
+    <div class="metadata">
+        <time datetime="{timestamp}">{timestamp}</time>
+        &middot; <a href="/">back</a>
+    </div>
+</body>
+</html>"#,
+                id = note.id,
+                html = note.html,
+                timestamp = note.timestamp,
+            );
+            Ok(Html(page))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            format!("note with id {id} not found"),
+        )),
     }
-
-    return Ok(Json(notes.iter().collect::<Vec<_>>()[index].clone()));
 }
 
-// DELETE /notes/:index
-async fn delete_note_by_index(
+// GET /notes/:id (JSON API)
+async fn get_note_by_id(
     State(state): State<AppState>,
-    Path(index): Path<usize>,
+    Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let notes = state.notes.lock().unwrap();
+    match notes.iter().find(|n| n.id == id) {
+        Some(note) => Ok(Json(note.clone())),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            format!("note with id {id} not found"),
+        )),
+    }
+}
+
+// PUT /notes/:id
+async fn update_note_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(content): Json<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    require_auth(&headers, &state.token).map_err(|s| (s, "unauthorized".to_string()))?;
     let mut notes = state.notes.lock().unwrap();
-    if index >= notes.len() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("request for non-existent note #{index}"),
-        ));
+    match notes.iter_mut().find(|n| n.id == id) {
+        None => Err((StatusCode::NOT_FOUND, format!("note with id {id} not found"))),
+        Some(note) => {
+            let (processed, links_to_download) = process_plus_links(&content);
+            note.content = processed;
+            note.html = md_to_html(&note.content);
+            let note_id = note.id.clone();
+            let file_content = notes
+                .iter()
+                .map(|n| format!("{}\n{}\n\n---\n\n", n.timestamp, n.content))
+                .collect::<String>();
+            drop(notes);
+            if let Err(e) = fs::write(&state.notes_file, &file_content) {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+            if !links_to_download.is_empty() {
+                spawn_downloads(
+                    links_to_download,
+                    note_id,
+                    state.notes.clone(),
+                    state.notes_file.clone(),
+                );
+            }
+            info!("Note updated: {}", id);
+            Ok(StatusCode::OK)
+        }
     }
+}
 
-    notes.remove(index);
-
-    // Update the notes file
-    let content = notes
-        .iter()
-        .map(|note| format!("{}\n{}\n\n---\n\n", note.timestamp, note.content))
-        .collect::<String>();
-
-    if let Err(e) = fs::write(&state.notes_file, content) {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+// DELETE /notes/:id
+async fn delete_note_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    require_auth(&headers, &state.token).map_err(|s| (s, "unauthorized".to_string()))?;
+    let mut notes = state.notes.lock().unwrap();
+    let pos = notes.iter().position(|n| n.id == id);
+    match pos {
+        None => Err((StatusCode::NOT_FOUND, format!("note with id {id} not found"))),
+        Some(i) => {
+            notes.remove(i);
+            let content = notes
+                .iter()
+                .map(|note| format!("{}\n{}\n\n---\n\n", note.timestamp, note.content))
+                .collect::<String>();
+            if let Err(e) = fs::write(&state.notes_file, content) {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+            info!("Note deleted by id: {}", id);
+            Ok(StatusCode::NO_CONTENT)
+        }
     }
-
-    info!("Note deleted: {}", index);
-
-    // TODO return the deleted note, maybe?
-    return Ok(StatusCode::NO_CONTENT);
 }
 
 // POST /notes
 async fn save_note(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(content): Json<String>,
-) -> Result<(), StatusCode> {
+) -> Result<(StatusCode, Json<String>), StatusCode> {
+    require_auth(&headers, &state.token)?;
     let mut content = content.clone();
 
     // Replace "---" with "<hr>" in the content
     content = content.replace("---", "<hr>");
-    let links_to_download: Vec<String> = content
-        .split_whitespace()
-        .filter(|word| word.starts_with("+http"))
-        .map(|s| s.to_string())
-        .collect();
 
-    fs::create_dir_all("attachments/webpages").unwrap();
-
-    for link in &links_to_download {
-        let url = &link[1..];
-        let escaped_filename = url_to_safe_filename(url);
-        let filepath = format!("attachments/webpages/{}.html", escaped_filename);
-        content = content.replace(link, &format!("{} ([local copy](/{}))", url, filepath));
-    }
+    let (content, links_to_download) = process_plus_links(&content);
 
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let html = md_to_html(&content); // Changed to pass a reference
+    let id = timestamp_to_id(&timestamp);
+    let html = md_to_html(&content);
     let note = Note {
+        id: id.clone(),
         timestamp: timestamp.clone(),
         content: content.clone(),
         html,
     };
 
-    state.notes.lock().unwrap().push(note);
+    let mut notes = state.notes.lock().unwrap();
+    notes.push(note);
+    drop(notes);
 
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -282,65 +496,24 @@ async fn save_note(
     info!("Note created: {}", timestamp);
 
     if !links_to_download.is_empty() {
-        let notes = state.notes.clone();
-        spawn(async move {
-            for link in links_to_download {
-                let url = &link[1..];
-                let escaped_filename = url_to_safe_filename(url);
-                let filepath = format!("attachments/webpages/{}.html", escaped_filename);
-
-                let result = Command::new("monolith")
-                    .args(&[url, "-o", &filepath])
-                    .output()
-                    .await;
-
-                info!("Downloading webpage: {}", url);
-
-                if result.is_err() {
-                    error!("Failed to download webpage: {}", url);
-                    let mut notes_lock = notes.lock().unwrap();
-                    if let Some(last_note) = notes_lock.last_mut() {
-                        let updated_content = last_note.content.replace(
-                            &format!("([local copy](/{}))", filepath),
-                            "(local copy failed)",
-                        );
-                        last_note.content = updated_content.clone();
-                        last_note.html = md_to_html(&updated_content); // Changed to pass a reference here too
-
-                        drop(notes_lock);
-
-                        if let Ok(file_content) = fs::read_to_string(&state.notes_file) {
-                            let notes_lock = notes.lock().unwrap();
-                            let updated_content: Vec<String> = file_content
-                                .split("\n---\n")
-                                .enumerate()
-                                .map(|(i, note_content)| {
-                                    if i == notes_lock.len() - 1 {
-                                        format!("{}\n{}", timestamp, updated_content)
-                                    } else {
-                                        note_content.to_string()
-                                    }
-                                })
-                                .collect();
-                            drop(notes_lock);
-
-                            if let Ok(mut file) = fs::File::create(&state.notes_file) {
-                                for note_content in updated_content {
-                                    writeln!(file, "{}\n---", note_content).ok();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        spawn_downloads(
+            links_to_download,
+            id.clone(),
+            state.notes.clone(),
+            state.notes_file.clone(),
+        );
     }
 
-    Ok(())
+    Ok((StatusCode::CREATED, Json(id)))
 }
 
 // route POST /upload
-async fn upload_file(mut multipart: Multipart) -> Result<Json<String>, StatusCode> {
+async fn upload_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<String>, StatusCode> {
+    require_auth(&headers, &state.token)?;
     while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.file_name().unwrap().to_string();
         let data = field.bytes().await.unwrap();
@@ -387,6 +560,93 @@ async fn upload_file(mut multipart: Multipart) -> Result<Json<String>, StatusCod
 }
 
 // UTILS
+
+/// Process +link patterns in content: replace with display text and return URLs to download.
+/// Returns (processed_content, links_to_download) where links_to_download is Vec<(url, filepath)>.
+fn process_plus_links(content: &str) -> (String, Vec<(String, String)>) {
+    let link_re = Regex::new(r"\+\[([^\]]+)\]\((https?://[^)]+)\)|\+<(https?://[^>]+)>|\+(https?://\S+)").unwrap();
+    let links: Vec<(String, String, Option<String>)> = link_re
+        .captures_iter(content)
+        .map(|cap| {
+            let full = cap.get(0).unwrap().as_str().to_string();
+            if let (Some(label), Some(url)) = (cap.get(1), cap.get(2)) {
+                (full, url.as_str().to_string(), Some(label.as_str().to_string()))
+            } else if let Some(url) = cap.get(3) {
+                (full, url.as_str().to_string(), None)
+            } else {
+                let url = cap.get(4).unwrap().as_str().to_string();
+                (full, url, None)
+            }
+        })
+        .collect();
+
+    if links.is_empty() {
+        return (content.to_string(), vec![]);
+    }
+
+    fs::create_dir_all("attachments/webpages").unwrap();
+
+    let mut result = content.to_string();
+    let mut to_download = vec![];
+
+    for (full_match, url, label) in &links {
+        let escaped_filename = url_to_safe_filename(url);
+        let filepath = format!("attachments/webpages/{}.html", escaped_filename);
+        let display = match label {
+            Some(l) => format!("[{}]({}) ([local copy](/{}))", l, url, filepath),
+            None => format!("{} ([local copy](/{}))", url, filepath),
+        };
+        result = result.replace(full_match, &display);
+        to_download.push((url.clone(), filepath));
+    }
+
+    (result, to_download)
+}
+
+/// Spawn background monolith downloads and update notes on failure.
+fn spawn_downloads(
+    links: Vec<(String, String)>,
+    note_id: String,
+    notes: Arc<Mutex<Vec<Note>>>,
+    notes_file: PathBuf,
+) {
+    spawn(async move {
+        for (url, filepath) in links {
+            let result = Command::new("monolith")
+                .args(&[url.as_str(), "-o", &filepath])
+                .output()
+                .await;
+
+            info!("Downloading webpage: {}", url);
+
+            if result.is_err() {
+                error!("Failed to download webpage: {}", url);
+                let mut notes_lock = notes.lock().unwrap();
+                if let Some(note) = notes_lock.iter_mut().find(|n| n.id == note_id) {
+                    note.content = note.content.replace(
+                        &format!("([local copy](/{}))", filepath),
+                        "(local copy failed)",
+                    );
+                    note.html = md_to_html(&note.content);
+                }
+                let file_content = notes_lock
+                    .iter()
+                    .map(|n| format!("{}\n{}\n\n---\n\n", n.timestamp, n.content))
+                    .collect::<String>();
+                drop(notes_lock);
+                if let Err(e) = fs::write(&notes_file, file_content) {
+                    error!("Failed to write notes file: {}", e);
+                }
+            }
+        }
+    });
+}
+
+/// Convert "2024-05-19 07:34:56" to "20240519073456"
+fn timestamp_to_id(ts: &str) -> String {
+    ts.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
 fn md_to_html(markdown: &str) -> String {
     let mut options = Options::default();
     options.extension.strikethrough = true;
@@ -396,7 +656,7 @@ fn md_to_html(markdown: &str) -> String {
     options.extension.tasklist = true;
     options.extension.superscript = true;
     options.render.unsafe_ = true;
-    options.render.hardbreaks = true;
+    options.render.hardbreaks = false;
     markdown_to_html(markdown, &options)
 }
 
