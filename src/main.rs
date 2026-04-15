@@ -1,4 +1,5 @@
 use axum::{
+    body::Bytes,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
@@ -23,14 +24,13 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use tokio::process::Command;
 use tokio::spawn;
-use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber;
 
 const INDEX_HTML: &str = include_str!("index.html");
 const FAVICON_SVG: &[u8] = include_bytes!("favicon.svg");
 const SHARED_CSS: &str = include_str!("shared.css");
-const NOTE_SEPARATOR: &str = "\n\n---\n\n";
+const NOTE_SEPARATOR: &str = "\u{000C}";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -87,9 +87,9 @@ async fn main() {
         }
     }
 
-    if let Err(e) = fs::create_dir_all("attachments") {
+    if let Err(e) = fs::create_dir_all("assets") {
         error!(
-            "could not create attachments directory in {}: {e}",
+            "could not create assets directory in {}: {e}",
             env::current_dir().unwrap().display()
         );
         process::exit(1);
@@ -172,9 +172,9 @@ async fn main() {
         .route("/notes/:id", get(get_note_by_id).put(update_note_by_id).delete(delete_note_by_id))
         .route("/note/:id", get(note_page))
         .route("/upload", post(upload_file))
+        .route("/assets/:name", get(get_asset).put(put_asset).head(head_asset))
         .fallback(get(fallback_md))
         .layer(DefaultBodyLimit::max(CONTENT_LENGTH_LIMIT))
-        .nest_service("/attachments", ServeDir::new("attachments"))
         .with_state(state);
 
     let app = if base_path.is_empty() {
@@ -226,9 +226,10 @@ async fn shutdown() {
 fn load_notes(file: &PathBuf, base_path: &str) -> Vec<Note> {
     if let Ok(content) = fs::read_to_string(file) {
         content
-            .split(NOTE_SEPARATOR)
+            .split('\u{000C}')
             .filter(|s| !s.trim().is_empty())
             .map(|block| {
+                let block = block.trim();
                 let parts: Vec<&str> = block.splitn(2, '\n').collect();
                 let (timestamp, content) = match parts.as_slice() {
                     [timestamp, content] => {
@@ -239,7 +240,7 @@ fn load_notes(file: &PathBuf, base_path: &str) -> Vec<Note> {
                         block.to_string(),
                     ),
                 };
-                let content = content.trim_end_matches("\n---").trim().to_string();
+                let content = content.trim().to_string();
 
                 let html = md_to_html(&content, base_path);
                 let id = timestamp_to_id(&timestamp);
@@ -466,7 +467,7 @@ async fn update_note_by_id(
     };
     let file_content = notes
         .iter()
-        .map(|n| format!("{}\n{}{}", n.timestamp, n.content, NOTE_SEPARATOR))
+        .map(|n| format!("{}\n{}\n\n{}\n\n", n.timestamp, n.content, NOTE_SEPARATOR))
         .collect::<String>();
     drop(notes);
     if let Err(e) = fs::write(&state.notes_file, &file_content) {
@@ -500,7 +501,7 @@ async fn delete_note_by_id(
             notes.remove(i);
             let content = notes
                 .iter()
-                .map(|note| format!("{}\n{}{}", note.timestamp, note.content, NOTE_SEPARATOR))
+                .map(|note| format!("{}\n{}\n\n{}\n\n", note.timestamp, note.content, NOTE_SEPARATOR))
                 .collect::<String>();
             if let Err(e) = fs::write(&state.notes_file, content) {
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
@@ -518,10 +519,7 @@ async fn save_note(
     Json(content): Json<String>,
 ) -> Result<(StatusCode, Json<String>), StatusCode> {
     require_auth(&headers, &state.token)?;
-    let mut content = content.clone();
-
-    // Replace "---" with "<hr>" in the content
-    content = content.replace("---", "<hr>");
+    let content = content.clone();
 
     let (content, links_to_download) = process_plus_links(&content, &state.base_path);
 
@@ -545,7 +543,7 @@ async fn save_note(
         .open(&state.notes_file)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    write!(file, "{}\n{}{}", timestamp, content, NOTE_SEPARATOR)
+    write!(file, "{}\n{}\n\n{}\n\n", timestamp, content, NOTE_SEPARATOR)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     info!("Note created: {}", timestamp);
@@ -576,7 +574,7 @@ async fn upload_file(
 
         info!("Uploading file: {}", name);
 
-        let original_path = PathBuf::from("attachments").join(&name);
+        let original_path = PathBuf::from("assets").join(&name);
         let mut counter = 1;
 
         let original_stem = original_path
@@ -606,7 +604,7 @@ async fn upload_file(
 
         info!("File saved as {}", path.display());
         return Ok(Json(format!(
-            "{}/attachments/{}",
+            "{}/assets/{}",
             state.base_path,
             path.file_name().unwrap().to_str().unwrap()
         )));
@@ -614,6 +612,51 @@ async fn upload_file(
 
     error!("Error uploading file");
     Err(StatusCode::BAD_REQUEST)
+}
+
+async fn put_asset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Result<StatusCode, StatusCode> {
+    require_auth(&headers, &state.token)?;
+    let path = PathBuf::from("assets").join(&name);
+    fs::write(&path, &body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    info!("Asset saved: {}", path.display());
+    Ok(StatusCode::CREATED)
+}
+
+async fn get_asset(Path(name): Path<String>) -> Response {
+    let path = PathBuf::from("assets").join(&name);
+    match fs::read(&path) {
+        Ok(data) => {
+            let content_type = match path.extension().and_then(|e| e.to_str()) {
+                Some("html") => "text/html",
+                Some("png") => "image/png",
+                Some("jpg" | "jpeg") => "image/jpeg",
+                Some("gif") => "image/gif",
+                Some("webp") => "image/webp",
+                Some("svg") => "image/svg+xml",
+                Some("pdf") => "application/pdf",
+                Some("css") => "text/css",
+                Some("js") => "application/javascript",
+                Some("json") => "application/json",
+                Some("txt" | "md") => "text/plain",
+                _ => "application/octet-stream",
+            };
+            ([(header::CONTENT_TYPE, content_type)], data).into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn head_asset(Path(name): Path<String>) -> StatusCode {
+    if PathBuf::from("assets").join(&name).exists() {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
 
 // UTILS
@@ -641,14 +684,14 @@ fn process_plus_links(content: &str, base_path: &str) -> (String, Vec<(String, S
         return (content.to_string(), vec![]);
     }
 
-    fs::create_dir_all("attachments/webpages").unwrap();
+    fs::create_dir_all("assets/webpages").unwrap();
 
     let mut result = content.to_string();
     let mut to_download = vec![];
 
     for (full_match, url, label) in &links {
         let escaped_filename = url_to_safe_filename(url);
-        let filepath = format!("attachments/webpages/{}.html", escaped_filename);
+        let filepath = format!("assets/webpages/{}.html", escaped_filename);
         let display = match label {
             Some(l) => format!("[{}]({}) ([local copy]({}/{}))", l, url, base_path, filepath),
             None => format!("{} ([local copy]({}/{}))", url, base_path, filepath),
@@ -704,7 +747,7 @@ fn spawn_downloads(
                 }
                 let file_content = notes_lock
                     .iter()
-                    .map(|n| format!("{}\n{}{}", n.timestamp, n.content, NOTE_SEPARATOR))
+                    .map(|n| format!("{}\n{}\n\n{}\n\n", n.timestamp, n.content, NOTE_SEPARATOR))
                     .collect::<String>();
                 drop(notes_lock);
                 if let Err(e) = fs::write(&notes_file, file_content) {
@@ -762,6 +805,7 @@ fn md_to_html(markdown: &str, base_path: &str) -> String {
     options.render.hardbreaks = false;
     let html = markdown_to_html(markdown, &options);
     let html = rewrite_md_links(&html, base_path);
+    let html = rewrite_attachment_links(&html, base_path);
     process_tags(&html, base_path)
 }
 
@@ -774,6 +818,15 @@ fn rewrite_md_links(html: &str, base_path: &str) -> String {
         let filename = href.rsplit('/').next().unwrap_or(href);
         format!(r#"href="{}?q={}""#, base_path, urlencoding::encode(filename))
     }).to_string()
+}
+
+/// Rewrite absolute /assets/ paths to include the base path prefix.
+fn rewrite_attachment_links(html: &str, base_path: &str) -> String {
+    if base_path.is_empty() {
+        return html.to_string();
+    }
+    html.replace("\"/assets/", &format!("\"{}/assets/", base_path))
+        .replace("'/assets/", &format!("'{}/assets/", base_path))
 }
 
 /// Convert :Tag1:Tag2: patterns into clickable search links.
@@ -793,7 +846,7 @@ fn process_tags(html: &str, base_path: &str) -> String {
             let tags_html = tags_to_links(m.as_str(), base_path);
             format!(r#"{}<span>{}</span><span class="tags">{}</span>{}"#, open, title, tags_html, close)
         } else {
-            caps[0].to_string()
+            format!("{}<span>{}</span>{}", open, inner, close)
         }
     });
 

@@ -24,6 +24,7 @@
 (require 'plz)
 (require 'ox-md)
 (require 'rx)
+(require 'org)
 
 ;;;; Customization
 
@@ -53,6 +54,26 @@ When non-nil, sent as an Authorization header with write requests."
       (user-error "No TEXTPOD_ID property on this heading"))
     (browse-url (format "%s/note/%s" textpod-url id))))
 
+
+;;;###autoload
+(defun textpod-org-heading-to-note ()
+  "Send the current heading's subtree to Textpod.
+Finds the nearest ancestor heading that has a TEXTPOD_ID property
+\(or the current heading itself) and sends it via
+`textpod-org-region-to-note'.  If no ancestor has TEXTPOD_ID,
+uses the current top-level heading."
+  (interactive)
+  (save-excursion
+    (org-back-to-heading t)
+    ;; Walk up to find a heading with TEXTPOD_ID, stop at level 1.
+    (while (and (not (org-entry-get nil "TEXTPOD_ID"))
+                (> (org-current-level) 1))
+      (org-up-heading-safe))
+    (let ((beg (point))
+          (end (org-end-of-subtree t t)))
+      (textpod-org-region-to-note beg end))))
+
+
 ;;;###autoload
 (defun textpod-org-region-to-note (beg end)
   "Convert the Org region between BEG and END to Markdown and send to Textpod."
@@ -75,6 +96,7 @@ When non-nil, sent as an Authorization header with write requests."
                    (org-md-headline-style 'atx))
                (org-export-string-as org-text 'md t)))
          (md (textpod--wrap-details md))
+         (md (textpod--upload-local-links md default-directory))
          (json-body (json-encode md)))
     (if existing-id
         (plz 'put (concat textpod-url "/notes/" existing-id)
@@ -152,6 +174,59 @@ Each marker opens a new <details> block; the previous one is closed."
             ("[-]" "▣"))
           match t t)))
      text)))
+
+(defun textpod--auth-headers ()
+  "Return auth headers (no Content-Type)."
+  (when textpod-token
+    `(("Authorization" . ,(concat "Bearer " textpod-token)))))
+
+(defun textpod--asset-exists-p (name)
+  "Return non-nil if asset NAME already exists on the server."
+  (condition-case nil
+      (let ((resp (plz 'head (concat textpod-url "/assets/" name)
+                    :headers (textpod--auth-headers)
+                    :as 'response)))
+        (= 204 (plz-response-status resp)))
+    (error nil)))
+
+(defun textpod--upload-asset (file-path)
+  "Upload FILE-PATH to Textpod assets.  Return the remote URL.
+Skips upload if the asset already exists."
+  (let ((name (file-name-nondirectory file-path)))
+    (unless (textpod--asset-exists-p name)
+      (plz 'put (concat textpod-url "/assets/" name)
+        :headers (append (textpod--auth-headers)
+                         '(("Content-Type" . "application/octet-stream")))
+        :body-type 'binary
+        :body `(file ,file-path)))
+    (concat textpod-url "/assets/" name)))
+
+(defun textpod--upload-local-links (md base-dir)
+  "Find local file links in MD, upload them, rewrite to remote URLs.
+BASE-DIR is the directory to resolve relative paths against.
+Returns the modified markdown string."
+  (let ((re (rx (or "![" "[")
+                (group (*? anything))
+                "]("
+                (group (*? anything))
+                ")")))
+    (replace-regexp-in-string
+     re
+     (lambda (match)
+       (let* ((label (match-string 1 match))
+              (path (match-string 2 match))
+              (is-image (string-prefix-p "!" (substring match 0 1)))
+              (abs-path (if (file-name-absolute-p path)
+                            path
+                          (expand-file-name path base-dir))))
+         (if (and (not (string-match-p (rx bos (or "http:" "https:")) path))
+                  (file-exists-p abs-path))
+             (let ((url (save-match-data (textpod--upload-asset abs-path))))
+               (if is-image
+                   (format "![%s](%s)" label url)
+                 (format "[%s](%s)" label url)))
+           match)))
+     md)))
 
 ;;;; Footer
 
