@@ -761,7 +761,19 @@ fn md_to_html(markdown: &str, base_path: &str) -> String {
     options.render.unsafe_ = true;
     options.render.hardbreaks = false;
     let html = markdown_to_html(markdown, &options);
+    let html = rewrite_md_links(&html, base_path);
     process_tags(&html, base_path)
+}
+
+/// Rewrite relative .md links to absolute search URLs.
+fn rewrite_md_links(html: &str, base_path: &str) -> String {
+    let link_re = Regex::new(r#"href="([^"]*\.md)""#).unwrap();
+    link_re.replace_all(html, |caps: &regex::Captures| {
+        let href = &caps[1];
+        // Extract just the filename, stripping any relative path components
+        let filename = href.rsplit('/').next().unwrap_or(href);
+        format!(r#"href="{}?q={}""#, base_path, urlencoding::encode(filename))
+    }).to_string()
 }
 
 /// Convert :Tag1:Tag2: patterns into clickable search links.
