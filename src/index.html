@@ -6,32 +6,10 @@
     <meta name="color-scheme" content="light dark" />
     <link rel="shortcut icon" href="{{FAVICON}}" />
     <style>
-        @media (prefers-color-scheme: light) {
-            :root {
-                --color-secondary: #666;
-                --color-text-secondary: white;
-                --color-bg-secondary: #dedcd1;
-            }
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --color-secondary: #BBB;
-                --color-text-secondary: black;
-                --color-bg-secondary: #3a3a3a;
-            }
-        }
+        {{SHARED_CSS}}
 
         html {
             height: 100%;
-        }
-
-        body {
-            font-family: system-ui, -apple-system, sans-serif;
-            font-size: 150%;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
         }
 
         #editor {
@@ -57,23 +35,16 @@
             cursor: pointer;
         }
 
-        .note> :first-child {
-            margin-top: 0;
-        }
-
         .note> :nth-last-child(2) {
             margin-bottom: 0.5em;
-        }
-
-        .note {
-            margin-bottom: 1.75em;
-            padding-top: 0.25em;
         }
 
         .note .noteMetadata {
             font-size: 0.9em;
             font-family: monospace;
             color: var(--color-secondary);
+            padding-bottom: 0.75em;
+            border-bottom: 1px solid var(--color-bg-secondary);
         }
 
         .note .noteMetadata a {
@@ -83,30 +54,6 @@
 
         .note .noteMetadata a:hover {
             text-decoration: underline;
-        }
-
-        .note code {
-            padding: 0.25em;
-            background-color: var(--color-bg-secondary);
-        }
-
-        .note pre {
-            padding: 0.5em;
-            background-color: var(--color-bg-secondary);
-        }
-
-        .note pre code {
-            padding: 0;
-            background-color: transparent;
-        }
-
-        .note img,
-        .note iframe,
-        .note video,
-        .note audio,
-        .note embed,
-        .note svg {
-            max-width: 100%;
         }
 
         footer {
@@ -127,6 +74,7 @@
     <div id="submitContainer"><button id="submitButton">Submit</button></div>
 
     <script>
+        const BASE_PATH = '{{BASE_PATH}}';
         const READONLY = {{READONLY}};
         if (READONLY) {
             const ed = document.getElementById('editor');
@@ -135,6 +83,7 @@
             document.getElementById('submitContainer').style.display = 'none';
         }
     </script>
+    <nav id="toc"></nav>
     <div id="notes"></div>
 
     <script>
@@ -152,26 +101,54 @@
             displayNotes();
         });
 
+        const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        function formatTimestamp(ts) {
+            const d = new Date(ts.replace(' ', 'T'));
+            const day = DAYS[d.getDay()];
+            return ts.replace(' ', ' ' + day + ' ');
+        }
+
         // fetches and displays all notes, optionally filtering them based on the query parameter `q`
         async function displayNotes() {
             const params = new URLSearchParams(window.location.search);
             const searchQuery = params.get('q');
-            let response = await fetch('/notes');
+            let response = await fetch(BASE_PATH + '/notes');
             if (response.ok) {
                 const notes = await response.json();
                 notesDiv.innerHTML = notes
-                    .filter(note => !searchQuery || note.content.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .filter(note => !searchQuery || note.content.toLowerCase().includes(searchQuery.toLowerCase()) || note.timestamp.includes(searchQuery))
                     .map((note, i) => `
                     <div class="note">
                         ${note.html}
                         <div class="noteMetadata">
-                            <a href="/note/${note.id}"><time datetime="${note.timestamp}">${note.timestamp}</time></a>
+                            <a href="${BASE_PATH}/note/${note.id}"><time datetime="${note.timestamp}">${formatTimestamp(note.timestamp)}</time></a>
                             ${READONLY ? '' : `[<a href="#" onclick="deleteNote('${note.id}')">delete</a>]`}
                         </div>
                     </div>`)
                     .reverse() // TODO implement user-specified sorting (reverse chronological by default)
                     .join('');
             }
+            buildTOC();
+        }
+
+        function buildTOC() {
+            const toc = document.getElementById('toc');
+            toc.innerHTML = '';
+            const headings = document.querySelectorAll('#notes .note h1, #notes .note h2');
+            if (headings.length < 2) return;
+            const ul = document.createElement('ul');
+            headings.forEach((h, i) => {
+                const id = 'heading-' + i;
+                h.id = id;
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                const text = h.querySelector('span') ? h.querySelector('span').textContent : h.textContent;
+                a.textContent = text.trim();
+                a.href = '#' + id;
+                li.appendChild(a);
+                ul.appendChild(li);
+            });
+            toc.appendChild(ul);
         }
 
         // saves a new note and refreshes the page
@@ -179,7 +156,7 @@
             if (!editor.value) {
                 return;
             }
-            const saveResponse = await fetch('/notes', {
+            const saveResponse = await fetch(BASE_PATH + '/notes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(editor.value)
@@ -199,7 +176,7 @@
                 return;
             }
 
-            deleteResponse = await fetch(`/notes/${id}`, {
+            deleteResponse = await fetch(`${BASE_PATH}/notes/${id}`, {
                 method: 'DELETE'
             });
 
@@ -263,7 +240,7 @@
                 const formData = new FormData();
                 formData.append('file', file);
 
-                const response = await fetch('/upload', {
+                const response = await fetch(BASE_PATH + '/upload', {
                     method: 'POST',
                     body: formData
                 });

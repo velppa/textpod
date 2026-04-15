@@ -29,6 +29,8 @@ use tracing_subscriber;
 
 const INDEX_HTML: &str = include_str!("index.html");
 const FAVICON_SVG: &[u8] = include_bytes!("favicon.svg");
+const SHARED_CSS: &str = include_str!("shared.css");
+const NOTE_SEPARATOR: &str = "\n\n---\n\n";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -48,6 +50,9 @@ struct Args {
     /// Require token for write access; without it the UI is read-only
     #[arg(short, long)]
     token: Option<String>,
+    /// Base URL path prefix (e.g., /textpod)
+    #[arg(long, default_value = "")]
+    base_path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +69,7 @@ struct AppState {
     notes: Arc<Mutex<Vec<Note>>>,
     notes_file: PathBuf,
     token: Option<String>,
+    base_path: String,
 }
 
 const CONTENT_LENGTH_LIMIT: usize = 500 * 1024 * 1024; // allow uploading up to 500mb files... overkill?
@@ -89,22 +95,36 @@ async fn main() {
         process::exit(1);
     }
 
-    let favicon = Base64Display::new(FAVICON_SVG, &STANDARD);
-    let html = INDEX_HTML.replace(
-        "{{FAVICON}}",
-        format!("data:image/svg+xml;base64,{favicon}").as_str(),
-    );
+    // Normalize base_path: ensure leading slash, no trailing slash, or empty
+    let base_path = {
+        let bp = args.base_path.trim_matches('/');
+        if bp.is_empty() {
+            String::new()
+        } else {
+            format!("/{}", bp)
+        }
+    };
 
-    let notes = Arc::new(Mutex::new(load_notes(&args.notes_file)));
+    let favicon = Base64Display::new(FAVICON_SVG, &STANDARD);
+    let html = INDEX_HTML
+        .replace(
+            "{{FAVICON}}",
+            format!("data:image/svg+xml;base64,{favicon}").as_str(),
+        )
+        .replace("{{BASE_PATH}}", &base_path);
+
+    let notes = Arc::new(Mutex::new(load_notes(&args.notes_file, &base_path)));
 
     let state = AppState {
         html,
         notes,
         notes_file: args.notes_file,
         token: args.token,
+        base_path: base_path.clone(),
     };
 
     // Watch notes file for external changes
+    let watch_base_path = base_path.clone();
     let watch_notes = state.notes.clone();
     let watch_file = state.notes_file.clone();
     let watch_file_canon = fs::canonicalize(&watch_file).unwrap_or_else(|_| watch_file.clone());
@@ -132,7 +152,7 @@ async fn main() {
                                 fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == watch_file_canon
                             });
                         if dominated && affects_file {
-                            let new_notes = load_notes(&watch_file);
+                            let new_notes = load_notes(&watch_file, &watch_base_path);
                             let mut notes = watch_notes.lock().unwrap();
                             *notes = new_notes;
                             info!("Reloaded notes from disk ({} notes)", notes.len());
@@ -146,7 +166,7 @@ async fn main() {
         watcher // keep alive
     };
 
-    let app = Router::new()
+    let inner = Router::new()
         .route("/", get(index))
         .route("/notes", get(get_notes).post(save_note))
         .route("/notes/:id", get(get_note_by_id).put(update_note_by_id).delete(delete_note_by_id))
@@ -156,6 +176,12 @@ async fn main() {
         .layer(DefaultBodyLimit::max(CONTENT_LENGTH_LIMIT))
         .nest_service("/attachments", ServeDir::new("attachments"))
         .with_state(state);
+
+    let app = if base_path.is_empty() {
+        inner
+    } else {
+        Router::new().nest(&base_path, inner)
+    };
 
     let server_details = format!("{}:{}", args.listen, args.port);
     let addr: SocketAddr = server_details
@@ -197,10 +223,10 @@ async fn shutdown() {
     }
 }
 
-fn load_notes(file: &PathBuf) -> Vec<Note> {
+fn load_notes(file: &PathBuf, base_path: &str) -> Vec<Note> {
     if let Ok(content) = fs::read_to_string(file) {
         content
-            .split("\n\n---\n\n")
+            .split(NOTE_SEPARATOR)
             .filter(|s| !s.trim().is_empty())
             .map(|block| {
                 let parts: Vec<&str> = block.splitn(2, '\n').collect();
@@ -215,7 +241,7 @@ fn load_notes(file: &PathBuf) -> Vec<Note> {
                 };
                 let content = content.trim_end_matches("\n---").trim().to_string();
 
-                let html = md_to_html(&content);
+                let html = md_to_html(&content, base_path);
                 let id = timestamp_to_id(&timestamp);
                 Note {
                     id,
@@ -236,14 +262,16 @@ async fn index(
     headers: HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    // If ?token=X is provided and matches, set cookie and redirect to /
+    // If ?token=X is provided and matches, set cookie and redirect to base
     if let Some(provided) = params.get("token") {
         if state.token.as_deref() == Some(provided.as_str()) {
+            let cookie_path = if state.base_path.is_empty() { "/".to_string() } else { state.base_path.clone() };
+            let redirect_to = if state.base_path.is_empty() { "/".to_string() } else { state.base_path.clone() };
             return (
                 StatusCode::SEE_OTHER,
                 [
-                    (header::SET_COOKIE, format!("textpod_token={}; Path=/; HttpOnly; SameSite=Strict", provided)),
-                    (header::LOCATION, "/".to_string()),
+                    (header::SET_COOKIE, format!("textpod_token={}; Path={}; HttpOnly; SameSite=Strict", provided, cookie_path)),
+                    (header::LOCATION, redirect_to),
                 ],
             )
                 .into_response();
@@ -255,7 +283,9 @@ async fn index(
         Some(token) => !has_valid_token(&headers, token),
     };
 
-    let html = state.html.replace("{{READONLY}}", if readonly { "true" } else { "false" });
+    let html = state.html
+        .replace("{{SHARED_CSS}}", SHARED_CSS)
+        .replace("{{READONLY}}", if readonly { "true" } else { "false" });
     Html(html).into_response()
 }
 
@@ -308,11 +338,11 @@ fn require_auth(headers: &HeaderMap, token: &Option<String>) -> Result<(), Statu
 }
 
 // Fallback: redirect *.md requests to /?q=filename.md
-async fn fallback_md(uri: axum::http::Uri) -> Response {
+async fn fallback_md(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let path = uri.path();
     if path.ends_with(".md") {
         let filename = path.rsplit('/').next().unwrap_or(path);
-        let location = format!("/?q={}", urlencoding::encode(filename));
+        let location = format!("{}?q={}", state.base_path, urlencoding::encode(filename));
         (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
     } else {
         StatusCode::NOT_FOUND.into_response()
@@ -333,40 +363,55 @@ async fn note_page(
     let notes = state.notes.lock().unwrap();
     match notes.iter().find(|n| n.id == id) {
         Some(note) => {
+            let title = note_title(note);
             let page = format!(
                 r#"<!DOCTYPE html>
 <html>
 <head>
-    <title>Note {id} - Textpod</title>
+    <title>{title} - Textpod</title>
     <meta name="color-scheme" content="light dark" />
     <style>
-        body {{
-            font-family: system-ui, -apple-system, sans-serif;
-            font-size: 150%;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .note code {{ padding: 0.25em; background-color: #eee; }}
-        .note pre {{ padding: 0.5em; background-color: #eee; }}
-        .note pre code {{ padding: 0; background-color: transparent; }}
-        .note img, .note video {{ max-width: 100%; }}
-        .metadata {{ font-family: monospace; color: #888; margin-top: 2em; }}
-        .metadata a {{ color: #888; text-decoration: none; }}
-        .metadata a:hover {{ text-decoration: underline; }}
+        {shared_css}
     </style>
 </head>
 <body>
+    <nav id="toc"></nav>
     <div class="note">{html}</div>
     <div class="metadata">
-        <time datetime="{timestamp}">{timestamp}</time>
-        &middot; <a href="/">back</a>
+        <time datetime="{timestamp}">{display_timestamp}</time>
+        &middot; <a href="{base_path}">back</a>
     </div>
+    <script>
+        (function() {{
+            const headings = document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6');
+            if (headings.length < 2) return;
+            const toc = document.getElementById('toc');
+            const ul = document.createElement('ul');
+            const minLevel = Math.min(...[...headings].map(h => parseInt(h.tagName[1])));
+            headings.forEach((h, i) => {{
+                const id = 'heading-' + i;
+                h.id = id;
+                const li = document.createElement('li');
+                const level = parseInt(h.tagName[1]) - minLevel;
+                li.style.marginLeft = (level * 1.2) + 'em';
+                const a = document.createElement('a');
+                const text = h.querySelector('span') ? h.querySelector('span').textContent : h.textContent;
+                a.textContent = text.trim();
+                a.href = '#' + id;
+                li.appendChild(a);
+                ul.appendChild(li);
+            }});
+            toc.appendChild(ul);
+        }})();
+    </script>
 </body>
 </html>"#,
-                id = note.id,
+                title = title,
+                shared_css = SHARED_CSS,
                 html = note.html,
                 timestamp = note.timestamp,
+                display_timestamp = format_timestamp_with_day(&note.timestamp),
+                base_path = state.base_path,
             );
             Ok(Html(page))
         }
@@ -400,34 +445,44 @@ async fn update_note_by_id(
     Json(content): Json<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     require_auth(&headers, &state.token).map_err(|s| (s, "unauthorized".to_string()))?;
+    let (processed, links_to_download) = process_plus_links(&content, &state.base_path);
     let mut notes = state.notes.lock().unwrap();
-    match notes.iter_mut().find(|n| n.id == id) {
-        None => Err((StatusCode::NOT_FOUND, format!("note with id {id} not found"))),
-        Some(note) => {
-            let (processed, links_to_download) = process_plus_links(&content);
-            note.content = processed;
-            note.html = md_to_html(&note.content);
-            let note_id = note.id.clone();
-            let file_content = notes
-                .iter()
-                .map(|n| format!("{}\n{}\n\n---\n\n", n.timestamp, n.content))
-                .collect::<String>();
-            drop(notes);
-            if let Err(e) = fs::write(&state.notes_file, &file_content) {
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-            }
-            if !links_to_download.is_empty() {
-                spawn_downloads(
-                    links_to_download,
-                    note_id,
-                    state.notes.clone(),
-                    state.notes_file.clone(),
-                );
-            }
-            info!("Note updated: {}", id);
-            Ok(StatusCode::OK)
-        }
+    let created = if let Some(note) = notes.iter_mut().find(|n| n.id == id) {
+        note.content = processed;
+        note.html = md_to_html(&note.content, &state.base_path);
+        false
+    } else {
+        let timestamp = id_to_timestamp(&id).unwrap_or_else(|| {
+            Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+        });
+        let html = md_to_html(&processed, &state.base_path);
+        notes.push(Note {
+            id: id.clone(),
+            timestamp,
+            content: processed,
+            html,
+        });
+        true
+    };
+    let file_content = notes
+        .iter()
+        .map(|n| format!("{}\n{}{}", n.timestamp, n.content, NOTE_SEPARATOR))
+        .collect::<String>();
+    drop(notes);
+    if let Err(e) = fs::write(&state.notes_file, &file_content) {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
     }
+    if !links_to_download.is_empty() {
+        spawn_downloads(
+            links_to_download,
+            id.clone(),
+            state.notes.clone(),
+            state.notes_file.clone(),
+            state.base_path.clone(),
+        );
+    }
+    info!("Note {}: {}", if created { "created" } else { "updated" }, id);
+    Ok(if created { StatusCode::CREATED } else { StatusCode::OK })
 }
 
 // DELETE /notes/:id
@@ -445,7 +500,7 @@ async fn delete_note_by_id(
             notes.remove(i);
             let content = notes
                 .iter()
-                .map(|note| format!("{}\n{}\n\n---\n\n", note.timestamp, note.content))
+                .map(|note| format!("{}\n{}{}", note.timestamp, note.content, NOTE_SEPARATOR))
                 .collect::<String>();
             if let Err(e) = fs::write(&state.notes_file, content) {
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
@@ -468,11 +523,11 @@ async fn save_note(
     // Replace "---" with "<hr>" in the content
     content = content.replace("---", "<hr>");
 
-    let (content, links_to_download) = process_plus_links(&content);
+    let (content, links_to_download) = process_plus_links(&content, &state.base_path);
 
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let id = timestamp_to_id(&timestamp);
-    let html = md_to_html(&content);
+    let html = md_to_html(&content, &state.base_path);
     let note = Note {
         id: id.clone(),
         timestamp: timestamp.clone(),
@@ -490,7 +545,7 @@ async fn save_note(
         .open(&state.notes_file)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    write!(file, "{}\n{}\n\n---\n\n", timestamp, content)
+    write!(file, "{}\n{}{}", timestamp, content, NOTE_SEPARATOR)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     info!("Note created: {}", timestamp);
@@ -501,6 +556,7 @@ async fn save_note(
             id.clone(),
             state.notes.clone(),
             state.notes_file.clone(),
+            state.base_path.clone(),
         );
     }
 
@@ -550,7 +606,8 @@ async fn upload_file(
 
         info!("File saved as {}", path.display());
         return Ok(Json(format!(
-            "/attachments/{}",
+            "{}/attachments/{}",
+            state.base_path,
             path.file_name().unwrap().to_str().unwrap()
         )));
     }
@@ -563,7 +620,7 @@ async fn upload_file(
 
 /// Process +link patterns in content: replace with display text and return URLs to download.
 /// Returns (processed_content, links_to_download) where links_to_download is Vec<(url, filepath)>.
-fn process_plus_links(content: &str) -> (String, Vec<(String, String)>) {
+fn process_plus_links(content: &str, base_path: &str) -> (String, Vec<(String, String)>) {
     let link_re = Regex::new(r"\+\[([^\]]+)\]\((https?://[^)]+)\)|\+<(https?://[^>]+)>|\+(https?://\S+)").unwrap();
     let links: Vec<(String, String, Option<String>)> = link_re
         .captures_iter(content)
@@ -593,8 +650,8 @@ fn process_plus_links(content: &str) -> (String, Vec<(String, String)>) {
         let escaped_filename = url_to_safe_filename(url);
         let filepath = format!("attachments/webpages/{}.html", escaped_filename);
         let display = match label {
-            Some(l) => format!("[{}]({}) ([local copy](/{}))", l, url, filepath),
-            None => format!("{} ([local copy](/{}))", url, filepath),
+            Some(l) => format!("[{}]({}) ([local copy]({}/{}))", l, url, base_path, filepath),
+            None => format!("{} ([local copy]({}/{}))", url, base_path, filepath),
         };
         result = result.replace(full_match, &display);
         to_download.push((url.clone(), filepath));
@@ -609,29 +666,45 @@ fn spawn_downloads(
     note_id: String,
     notes: Arc<Mutex<Vec<Note>>>,
     notes_file: PathBuf,
+    base_path: String,
 ) {
     spawn(async move {
         for (url, filepath) in links {
+            info!("Downloading webpage: {}", url);
             let result = Command::new("monolith")
                 .args(&[url.as_str(), "-o", &filepath])
                 .output()
                 .await;
 
-            info!("Downloading webpage: {}", url);
+            let failed = match &result {
+                Err(e) => {
+                    error!("Failed to run monolith: {}", e);
+                    true
+                }
+                Ok(output) if !output.status.success() => {
+                    error!(
+                        "monolith exited with {}: {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    true
+                }
+                _ => false,
+            };
 
-            if result.is_err() {
+            if failed {
                 error!("Failed to download webpage: {}", url);
                 let mut notes_lock = notes.lock().unwrap();
                 if let Some(note) = notes_lock.iter_mut().find(|n| n.id == note_id) {
                     note.content = note.content.replace(
-                        &format!("([local copy](/{}))", filepath),
+                        &format!("([local copy]({}/{}))", base_path, filepath),
                         "(local copy failed)",
                     );
-                    note.html = md_to_html(&note.content);
+                    note.html = md_to_html(&note.content, &base_path);
                 }
                 let file_content = notes_lock
                     .iter()
-                    .map(|n| format!("{}\n{}\n\n---\n\n", n.timestamp, n.content))
+                    .map(|n| format!("{}\n{}{}", n.timestamp, n.content, NOTE_SEPARATOR))
                     .collect::<String>();
                 drop(notes_lock);
                 if let Err(e) = fs::write(&notes_file, file_content) {
@@ -642,12 +715,42 @@ fn spawn_downloads(
     });
 }
 
+/// Format "2026-04-14 21:34:18" as "2026-04-14 Mon 21:34:18"
+fn format_timestamp_with_day(ts: &str) -> String {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        dt.format("%Y-%m-%d %a %H:%M:%S").to_string()
+    } else {
+        ts.to_string()
+    }
+}
+
+/// Extract a title from a note: first heading, or first line of content.
+fn note_title(note: &Note) -> String {
+    let re = Regex::new(r"(?m)^#{1,6}\s+(.+)").unwrap();
+    if let Some(cap) = re.captures(&note.content) {
+        cap[1].trim().to_string()
+    } else {
+        note.content.lines().next().unwrap_or("Note").trim().to_string()
+    }
+}
+
 /// Convert "2024-05-19 07:34:56" to "20240519073456"
 fn timestamp_to_id(ts: &str) -> String {
     ts.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
-fn md_to_html(markdown: &str) -> String {
+/// Convert "20240519073456" to "2024-05-19 07:34:56"
+fn id_to_timestamp(id: &str) -> Option<String> {
+    if id.len() != 14 || !id.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{} {}:{}:{}",
+        &id[0..4], &id[4..6], &id[6..8], &id[8..10], &id[10..12], &id[12..14]
+    ))
+}
+
+fn md_to_html(markdown: &str, base_path: &str) -> String {
     let mut options = Options::default();
     options.extension.strikethrough = true;
     options.extension.tagfilter = true;
@@ -657,7 +760,52 @@ fn md_to_html(markdown: &str) -> String {
     options.extension.superscript = true;
     options.render.unsafe_ = true;
     options.render.hardbreaks = false;
-    markdown_to_html(markdown, &options)
+    let html = markdown_to_html(markdown, &options);
+    process_tags(&html, base_path)
+}
+
+/// Convert :Tag1:Tag2: patterns into clickable search links.
+/// Inside headings, tags are wrapped in a right-aligned span.
+fn process_tags(html: &str, base_path: &str) -> String {
+    // Match :Word1:Word2: patterns (one or more tags between colons)
+    let tag_re = Regex::new(r"(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)").unwrap();
+
+    // Process headings first: move tags into a <span class="tags">
+    let heading_re = Regex::new(r"(<h[1-6][^>]*>)(.*?)(</h[1-6]>)").unwrap();
+    let result = heading_re.replace_all(html, |caps: &regex::Captures| {
+        let open = &caps[1];
+        let inner = &caps[2];
+        let close = &caps[3];
+        if let Some(m) = tag_re.find(inner) {
+            let title = inner[..m.start()].trim_end();
+            let tags_html = tags_to_links(m.as_str(), base_path);
+            format!(r#"{}<span>{}</span><span class="tags">{}</span>{}"#, open, title, tags_html, close)
+        } else {
+            caps[0].to_string()
+        }
+    });
+
+    // Process remaining (non-heading) tags in body text
+    tag_re.replace_all(&result, |caps: &regex::Captures| {
+        tags_to_links(&caps[1], base_path)
+    }).to_string()
+}
+
+/// Convert a ":Tag1:Tag2:" string into individual <a class="tag"> links.
+fn tags_to_links(tag_str: &str, base_path: &str) -> String {
+    tag_str
+        .trim_matches(':')
+        .split(':')
+        .map(|tag| {
+            format!(
+                r#"<a class="tag" href="{}?q={}">{}</a>"#,
+                base_path,
+                urlencoding::encode(tag),
+                tag
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn url_to_safe_filename(url: &str) -> String {
