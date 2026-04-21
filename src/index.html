@@ -129,7 +129,6 @@
                             ${READONLY ? '' : `[<a href="#" onclick="deleteNote('${note.id}')">delete</a>]`}
                         </div>
                     </div>`)
-                    .reverse() // TODO implement user-specified sorting (reverse chronological by default)
                     .join('');
             }
             buildTOC();

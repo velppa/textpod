@@ -225,7 +225,7 @@ async fn shutdown() {
 
 fn load_notes(file: &PathBuf, base_path: &str) -> Vec<Note> {
     if let Ok(content) = fs::read_to_string(file) {
-        content
+        let mut notes: Vec<Note> = content
             .split('\u{000C}')
             .filter(|s| !s.trim().is_empty())
             .map(|block| {
@@ -251,7 +251,9 @@ fn load_notes(file: &PathBuf, base_path: &str) -> Vec<Note> {
                     html,
                 }
             })
-            .collect()
+            .collect();
+        notes.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        notes
     } else {
         Vec::new()
     }
@@ -353,7 +355,11 @@ async fn fallback_md(State(state): State<AppState>, uri: axum::http::Uri) -> Res
 // GET /notes
 async fn get_notes(State(state): State<AppState>) -> Json<Vec<Note>> {
     let notes = state.notes.lock().unwrap();
-    Json(notes.iter().cloned().collect::<Vec<_>>())
+    Json(notes.iter().rev().map(|n| {
+        let mut note = n.clone();
+        note.html = wrap_h3_in_details(&note.html);
+        note
+    }).collect::<Vec<_>>())
 }
 
 // GET /note/:id (HTML page)
@@ -463,6 +469,7 @@ async fn update_note_by_id(
             content: processed,
             html,
         });
+        notes.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         true
     };
     let file_content = notes
@@ -535,6 +542,7 @@ async fn save_note(
 
     let mut notes = state.notes.lock().unwrap();
     notes.push(note);
+    notes.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
     drop(notes);
 
     let mut file = fs::OpenOptions::new()
@@ -827,6 +835,50 @@ fn rewrite_attachment_links(html: &str, base_path: &str) -> String {
     }
     html.replace("\"/assets/", &format!("\"{}/assets/", base_path))
         .replace("'/assets/", &format!("'{}/assets/", base_path))
+}
+
+/// Wrap each h3 and its following content in <details><summary>.
+fn wrap_h3_in_details(html: &str) -> String {
+    let h3_re = Regex::new(r"(?s)<h3>(.*?)</h3>").unwrap();
+    let mut result = String::new();
+    let mut last = 0;
+    let mut in_details = false;
+    for cap in h3_re.find_iter(html) {
+        let before = &html[last..cap.start()];
+        if in_details {
+            result.push_str(before);
+            result.push_str("</details>\n");
+        } else {
+            result.push_str(before);
+        }
+        in_details = true;
+        let caps = h3_re.captures(&html[cap.start()..]).unwrap();
+        let title = caps.get(1).unwrap().as_str();
+        result.push_str(&format!("<details><summary>{}</summary>\n", title));
+        last = cap.end();
+    }
+    if in_details {
+        result.push_str(&html[last..]);
+        result.push_str("</details>\n");
+    } else {
+        result.push_str(&html[last..]);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_h3_in_details() {
+        let input = "<h3>First</h3>\n<p>content1</p>\n<h3>Second</h3>\n<p>content2</p>\n<h3>Last</h3>\n<p>last content</p>\n";
+        let output = wrap_h3_in_details(input);
+        println!("OUTPUT:\n{}", output);
+        assert!(output.contains("<details><summary>Last</summary>"));
+        assert!(output.contains("<p>last content</p>\n</details>"));
+        assert!(output.ends_with("</details>\n"));
+    }
 }
 
 /// Convert :Tag1:Tag2: patterns into clickable search links.

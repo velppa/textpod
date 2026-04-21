@@ -64,6 +64,16 @@ body {
     gap: 0.5em;
 }
 
+.note details > summary {
+    cursor: pointer;
+    list-style: revert;
+    font-weight: normal;
+}
+
+.note details {
+    margin: 0;
+}
+
 .note .tags {
     margin-left: auto;
     flex-shrink: 0;

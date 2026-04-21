@@ -49,7 +49,7 @@ When non-nil, sent as an Authorization header with write requests."
 (defun textpod-open-current-note ()
   "Open the current heading's Textpod note in a browser."
   (interactive)
-  (let ((id (org-entry-get nil "TEXTPOD_ID")))
+  (let ((id (org-entry-get nil "TEXTPOD_ID" t)))
     (unless id
       (user-error "No TEXTPOD_ID property on this heading"))
     (browse-url (format "%s/note/%s" textpod-url id))))
@@ -90,9 +90,10 @@ uses the current top-level heading."
                           (org-entry-get nil "TEXTPOD_ID"))))
          (org-text (buffer-substring-no-properties beg end))
          (org-text (textpod--replace-checkboxes org-text))
+         (org-text (textpod--strip-statistics-cookies org-text))
          (org-text (textpod--process-details org-text))
          (md (let ((org-export-with-toc nil)
-                   (org-export-with-todo-keywords t)
+                   (org-export-with-todo-keywords nil)
                    (org-md-headline-style 'atx))
                (org-export-string-as org-text 'md t)))
          (md (textpod--wrap-details md))
@@ -174,6 +175,14 @@ Each marker opens a new <details> block; the previous one is closed."
             ("[-]" "▣"))
           match t t)))
      text)))
+
+(defun textpod--strip-statistics-cookies (text)
+  "Remove Org statistics cookies like [3/3] or [100%] from TEXT."
+  (replace-regexp-in-string
+   (rx " " "[" (or (seq (+ digit) "/" (+ digit))
+                    (seq (+ digit) "%"))
+       "]")
+   "" text))
 
 (defun textpod--auth-headers ()
   "Return auth headers (no Content-Type)."
