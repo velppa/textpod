@@ -1,3 +1,3 @@
-- [ ] Update version in `Cargo.toml` and re-generate `Cargo.lock`
+- [ ] Update module version if needed and run `go mod tidy`
 - [ ] Create Github release
 - [ ] Update homebrew formula https://github.com/freetonik/homebrew-tap
