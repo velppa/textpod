@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,8 @@ var sharedCSS string
 
 const noteSeparator = "\u000C"
 const contentLengthLimit = 500 * 1024 * 1024
+const timestampLayout = "2006-01-02 15:04:05"
+const timestampDisplayLayout = "2006-01-02 Mon 15:04:05"
 
 type Note struct {
 	ID        string `json:"id"`
@@ -52,7 +55,7 @@ type Note struct {
 type Config struct {
 	BaseDir   string
 	Port      int
-	Addr    string
+	Addr      string
 	NotesFile string
 	Token     string
 	HasToken  bool
@@ -200,17 +203,17 @@ func loadNotes(file, basePath string) []Note {
 		return nil
 	}
 	var notes []Note
-	for _, block := range strings.Split(string(data), noteSeparator) {
+	for block := range strings.SplitSeq(string(data), noteSeparator) {
 		block = strings.TrimSpace(block)
 		if block == "" {
 			continue
 		}
 		var timestamp, content string
-		if idx := strings.IndexByte(block, '\n'); idx != -1 {
-			timestamp = strings.TrimSpace(block[:idx])
-			content = strings.TrimSpace(block[idx+1:])
+		if first, rest, ok := strings.Cut(block, "\n"); ok {
+			timestamp = strings.TrimSpace(first)
+			content = strings.TrimSpace(rest)
 		} else {
-			timestamp = time.Now().Format("2006-01-02 15:04:05")
+			timestamp = time.Now().Format(timestampLayout)
 			content = block
 		}
 		htmlRendered := mdToHTML(content, basePath)
@@ -270,8 +273,8 @@ func hasValidToken(r *http.Request, token string) bool {
 		return true
 	}
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		if strings.TrimPrefix(auth, "Bearer ") == token {
+	if rest, ok := strings.CutPrefix(auth, "Bearer "); ok {
+		if rest == token {
 			return true
 		}
 	}
@@ -416,7 +419,7 @@ func (s *Server) updateNoteByID(w http.ResponseWriter, r *http.Request) {
 	if created {
 		ts, ok := idToTimestamp(id)
 		if !ok {
-			ts = time.Now().Format("2006-01-02 15:04:05")
+			ts = time.Now().Format(timestampLayout)
 		}
 		s.Notes = append(s.Notes, Note{
 			ID:        id,
@@ -486,7 +489,7 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 	}
 	content, toDownload := processPlusLinks(content, s.BasePath)
 
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	timestamp := time.Now().Format(timestampLayout)
 	id := timestampToID(timestamp)
 	note := Note{
 		ID:        id,
@@ -530,53 +533,59 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusBadRequest)
 		return
 	}
+	var fh *multipart.FileHeader
 	for _, fhs := range r.MultipartForm.File {
-		for _, fh := range fhs {
-			name := fh.Filename
-			log.Printf("Uploading file: %s", name)
-
-			f, err := fh.Open()
-			if err != nil {
-				http.Error(w, "", http.StatusInternalServerError)
-				return
-			}
-			data, err := io.ReadAll(f)
-			f.Close()
-			if err != nil {
-				http.Error(w, "", http.StatusInternalServerError)
-				return
-			}
-
-			originalPath := filepath.Join("assets", name)
-			stem := strings.TrimSuffix(filepath.Base(originalPath), filepath.Ext(originalPath))
-			ext := strings.TrimPrefix(filepath.Ext(originalPath), ".")
-			path := originalPath
-			counter := 1
-			for {
-				if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-					break
-				}
-				var newName string
-				if ext == "" {
-					newName = fmt.Sprintf("%s-%d", stem, counter)
-				} else {
-					newName = fmt.Sprintf("%s-%d.%s", stem, counter, ext)
-				}
-				path = filepath.Join(filepath.Dir(originalPath), newName)
-				counter++
-			}
-
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				http.Error(w, "", http.StatusInternalServerError)
-				return
-			}
-			log.Printf("File saved as %s", path)
-			writeJSON(w, http.StatusOK, fmt.Sprintf("%s/assets/%s", s.BasePath, filepath.Base(path)))
-			return
+		if len(fhs) > 0 {
+			fh = fhs[0]
+			break
 		}
 	}
-	log.Printf("Error uploading file")
-	http.Error(w, "", http.StatusBadRequest)
+	if fh == nil {
+		log.Printf("Error uploading file")
+		http.Error(w, "", http.StatusBadRequest)
+		return
+	}
+
+	name := fh.Filename
+	log.Printf("Uploading file: %s", name)
+
+	f, err := fh.Open()
+	if err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	data, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
+	originalPath := filepath.Join("assets", name)
+	stem := strings.TrimSuffix(filepath.Base(originalPath), filepath.Ext(originalPath))
+	ext := strings.TrimPrefix(filepath.Ext(originalPath), ".")
+	path := originalPath
+	counter := 1
+	for {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		var newName string
+		if ext == "" {
+			newName = fmt.Sprintf("%s-%d", stem, counter)
+		} else {
+			newName = fmt.Sprintf("%s-%d.%s", stem, counter, ext)
+		}
+		path = filepath.Join(filepath.Dir(originalPath), newName)
+		counter++
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("File saved as %s", path)
+	writeJSON(w, http.StatusOK, fmt.Sprintf("%s/assets/%s", s.BasePath, filepath.Base(path)))
 }
 
 func (s *Server) putAsset(w http.ResponseWriter, r *http.Request) {
@@ -745,11 +754,11 @@ func (s *Server) runDownloads(links [][2]string, noteID string) {
 }
 
 func formatTimestampWithDay(ts string) string {
-	t, err := time.Parse("2006-01-02 15:04:05", ts)
+	t, err := time.Parse(timestampLayout, ts)
 	if err != nil {
 		return ts
 	}
-	return t.Format("2006-01-02 Mon 15:04:05")
+	return t.Format(timestampDisplayLayout)
 }
 
 var headingContentRe = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)`)
@@ -849,7 +858,7 @@ func wrapH3InDetails(htmlStr string) string {
 			b.WriteString(before)
 		}
 		inDetails = true
-		b.WriteString(fmt.Sprintf("<details><summary>%s</summary>\n", htmlStr[titleStart:titleEnd]))
+		fmt.Fprintf(&b, "<details><summary>%s</summary>\n", htmlStr[titleStart:titleEnd])
 		last = end
 	}
 	if inDetails {
