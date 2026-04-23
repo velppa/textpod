@@ -31,13 +31,13 @@ import (
 	"github.com/yuin/goldmark/renderer/html"
 )
 
-//go:embed src/index.html
+//go:embed index.html
 var indexHTML string
 
-//go:embed src/favicon.svg
+//go:embed favicon.svg
 var faviconSVG []byte
 
-//go:embed src/shared.css
+//go:embed shared.css
 var sharedCSS string
 
 const noteSeparator = "\u000C"
@@ -127,9 +127,9 @@ func main() {
 	mux.HandleFunc("DELETE /notes/{id}", server.deleteNoteByID)
 	mux.HandleFunc("GET /note/{id}", server.notePage)
 	mux.HandleFunc("POST /upload", server.uploadFile)
-	mux.HandleFunc("GET /assets/{name}", server.getAsset)
-	mux.HandleFunc("PUT /assets/{name}", server.putAsset)
-	mux.HandleFunc("HEAD /assets/{name}", server.headAsset)
+	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
+	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
+	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
 	mux.HandleFunc("/", server.fallbackMD)
 
 	var handler http.Handler = mux
@@ -336,6 +336,14 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title := noteTitle(note)
+	readonly := s.HasToken && !hasValidToken(r, s.Token)
+	contentJSON, _ := json.Marshal(note.Content)
+	idJSON, _ := json.Marshal(note.ID)
+	basePathJSON, _ := json.Marshal(s.BasePath)
+	editControls := ""
+	if !readonly {
+		editControls = ` &middot; <a href="#" id="editLink">edit</a> &middot; <a href="#" id="deleteLink">delete</a>`
+	}
 	page := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -343,40 +351,140 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
     <meta name="color-scheme" content="light dark" />
     <style>
         %s
+        #editor {
+            width: 100%%;
+            min-height: 300px;
+            font-family: monospace;
+            font-size: inherit;
+            padding: 1em;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        #editActions {
+            margin-top: 0.75em;
+            text-align: right;
+        }
+        #editActions button {
+            font-family: monospace;
+            padding: 0.4em 1em;
+            background-color: var(--color-secondary);
+            color: var(--color-text-secondary);
+            border: none;
+            cursor: pointer;
+            margin-left: 0.5em;
+        }
     </style>
 </head>
 <body>
     <nav id="toc"></nav>
-    <div class="note">%s</div>
+    <div id="noteView" class="note">%s</div>
+    <div id="noteEdit" style="display:none">
+        <textarea id="editor"></textarea>
+        <div id="editActions">
+            <button id="cancelButton" type="button">Cancel</button>
+            <button id="submitButton" type="button">Submit</button>
+        </div>
+    </div>
     <div class="metadata">
         <time datetime="%s">%s</time>
-        &middot; <a href="%s">back</a>
+        &middot; <a href="%s">back</a>%s
     </div>
     <script>
         (function() {
             const headings = document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6');
-            if (headings.length < 2) return;
-            const toc = document.getElementById('toc');
-            const ul = document.createElement('ul');
-            const minLevel = Math.min(...[...headings].map(h => parseInt(h.tagName[1])));
-            headings.forEach((h, i) => {
-                const id = 'heading-' + i;
-                h.id = id;
-                const li = document.createElement('li');
-                const level = parseInt(h.tagName[1]) - minLevel;
-                li.style.marginLeft = (level * 1.2) + 'em';
-                const a = document.createElement('a');
-                const text = h.querySelector('span') ? h.querySelector('span').textContent : h.textContent;
-                a.textContent = text.trim();
-                a.href = '#' + id;
-                li.appendChild(a);
-                ul.appendChild(li);
-            });
-            toc.appendChild(ul);
+            if (headings.length >= 2) {
+                const toc = document.getElementById('toc');
+                const ul = document.createElement('ul');
+                const minLevel = Math.min(...[...headings].map(h => parseInt(h.tagName[1])));
+                headings.forEach((h, i) => {
+                    const id = 'heading-' + i;
+                    h.id = id;
+                    const li = document.createElement('li');
+                    const level = parseInt(h.tagName[1]) - minLevel;
+                    li.style.marginLeft = (level * 1.2) + 'em';
+                    const a = document.createElement('a');
+                    const text = h.querySelector('span') ? h.querySelector('span').textContent : h.textContent;
+                    a.textContent = text.trim();
+                    a.href = '#' + id;
+                    li.appendChild(a);
+                    ul.appendChild(li);
+                });
+                toc.appendChild(ul);
+            }
+
+            const NOTE_ID = %s;
+            const BASE_PATH = %s;
+            const CONTENT = %s;
+            const view = document.getElementById('noteView');
+            const edit = document.getElementById('noteEdit');
+            const editor = document.getElementById('editor');
+            const editLink = document.getElementById('editLink');
+            const deleteLink = document.getElementById('deleteLink');
+            const submitButton = document.getElementById('submitButton');
+            const cancelButton = document.getElementById('cancelButton');
+
+            if (editLink) {
+                editor.addEventListener('dragover', (e) => { e.preventDefault(); });
+                editor.addEventListener('drop', async (e) => {
+                    e.preventDefault();
+                    for (const file of e.dataTransfer.files) {
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        const resp = await fetch(BASE_PATH + '/upload', { method: 'POST', body: formData });
+                        if (!resp.ok) continue;
+                        const path = await resp.json();
+                        const filename = path.split('/').pop();
+                        const pos = editor.selectionStart;
+                        const before = editor.value.substring(0, pos);
+                        const after = editor.value.substring(pos);
+                        const needsBrackets = path.includes(' ') || filename.includes(' ');
+                        const formattedPath = needsBrackets ? '<' + path + '>' : path;
+                        editor.value = file.type.startsWith('image/')
+                            ? before + '![' + filename + '](' + formattedPath + ')' + after
+                            : before + '[' + filename + '](' + formattedPath + ')' + after;
+                    }
+                });
+                editLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    editor.value = CONTENT;
+                    view.style.display = 'none';
+                    edit.style.display = '';
+                    editor.focus();
+                });
+                cancelButton.addEventListener('click', () => {
+                    edit.style.display = 'none';
+                    view.style.display = '';
+                });
+                submitButton.addEventListener('click', async () => {
+                    const resp = await fetch(BASE_PATH + '/notes/' + NOTE_ID, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(editor.value)
+                    });
+                    if (resp.ok) {
+                        location.reload();
+                    } else {
+                        alert('Failed to save note');
+                    }
+                });
+                deleteLink.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    if (!confirm('Are you sure you want to delete this note?')) return;
+                    const resp = await fetch(BASE_PATH + '/notes/' + NOTE_ID, { method: 'DELETE' });
+                    if (resp.ok) {
+                        location.href = BASE_PATH || '/';
+                    } else {
+                        alert('Failed to delete note');
+                    }
+                });
+            }
         })();
     </script>
 </body>
-</html>`, title, sharedCSS, note.HTML, note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
+</html>`,
+		title, sharedCSS, note.HTML,
+		note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath, editControls,
+		idJSON, basePathJSON, contentJSON)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, page)
 }
@@ -588,17 +696,33 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, fmt.Sprintf("%s/assets/%s", s.BasePath, filepath.Base(path)))
 }
 
+func assetPath(name string) (string, bool) {
+	path := filepath.Join("assets", name)
+	if path != "assets" && !strings.HasPrefix(path, "assets"+string(filepath.Separator)) {
+		return "", false
+	}
+	return path, true
+}
+
 func (s *Server) putAsset(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuth(w, r) {
 		return
 	}
 	name := r.PathValue("name")
+	path, ok := assetPath(name)
+	if !ok {
+		http.Error(w, "", http.StatusBadRequest)
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-	path := filepath.Join("assets", name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -609,7 +733,11 @@ func (s *Server) putAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	path := filepath.Join("assets", name)
+	path, ok := assetPath(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -647,7 +775,12 @@ func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) headAsset(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if _, err := os.Stat(filepath.Join("assets", name)); err == nil {
+	path, ok := assetPath(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -871,7 +1004,7 @@ func wrapH3InDetails(htmlStr string) string {
 }
 
 var (
-	tagRe        = regexp.MustCompile(`(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)`)
+	tagRe        = regexp.MustCompile(`(^|\s)(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)`)
 	headingTagRe = regexp.MustCompile(`(?s)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
 )
 
@@ -879,15 +1012,17 @@ func processTags(htmlStr, basePath string) string {
 	result := headingTagRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
 		sub := headingTagRe.FindStringSubmatch(match)
 		open, inner, close := sub[1], sub[2], sub[3]
-		if loc := tagRe.FindStringIndex(inner); loc != nil {
-			title := strings.TrimRight(inner[:loc[0]], " \t")
-			tagsHTML := tagsToLinks(inner[loc[0]:loc[1]], basePath)
+		if loc := tagRe.FindStringSubmatchIndex(inner); loc != nil {
+			tagStart, tagEnd := loc[4], loc[5]
+			title := strings.TrimRight(inner[:tagStart], " \t")
+			tagsHTML := tagsToLinks(inner[tagStart:tagEnd], basePath)
 			return fmt.Sprintf(`%s<span>%s</span><span class="tags">%s</span>%s`, open, title, tagsHTML, close)
 		}
 		return fmt.Sprintf("%s<span>%s</span>%s", open, inner, close)
 	})
 	return tagRe.ReplaceAllStringFunc(result, func(match string) string {
-		return tagsToLinks(match, basePath)
+		sub := tagRe.FindStringSubmatch(match)
+		return sub[1] + tagsToLinks(sub[2], basePath)
 	})
 }
 

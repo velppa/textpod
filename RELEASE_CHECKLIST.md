@@ -1,3 +1,0 @@
-- [ ] Update module version if needed and run `go mod tidy`
-- [ ] Create Github release
-- [ ] Update homebrew formula https://github.com/freetonik/homebrew-tap

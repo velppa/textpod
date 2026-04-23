@@ -52,3 +52,16 @@ Flags:
 - `--base-path` – URL prefix when served behind a reverse proxy (e.g. `/notes`)
 
 Results are here – <https://finita.myaddr.dev/notes>.
+
+# textpod.el
+[textpod.el] is a companion Emacs package to seamlessly work with notes. Especially
+handy with Org Roam.
+
+```elisp
+(use-package textpod
+  :config
+  (setq textpod-id-property "ID"
+        textpod-id-prefix "textpod_"
+        textpod-token (cadr (auth-source-user-and-password "finita.myaddr.dev" "textpod"))
+        textpod-url "https://finita.myaddr.dev/notes"))
+```

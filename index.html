@@ -126,7 +126,6 @@
                         ${note.html}
                         <div class="noteMetadata">
                             <a href="${BASE_PATH}/note/${note.id}"><time datetime="${note.timestamp}">${formatTimestamp(note.timestamp)}</time></a>
-                            ${READONLY ? '' : `[<a href="#" onclick="deleteNote('${note.id}')">delete</a>]`}
                         </div>
                     </div>`)
                     .join('');
@@ -169,24 +168,6 @@
             if (saveResponse.ok) {
                 editor.value = '';
                 displayNotes();
-            }
-        }
-
-        // deletes note by id
-        async function deleteNote(id) {
-            event.preventDefault();
-            if (!confirm('Are you sure you want to delete this note?')) {
-                return;
-            }
-
-            deleteResponse = await fetch(`${BASE_PATH}/notes/${id}`, {
-                method: 'DELETE'
-            });
-
-            if (deleteResponse.ok) {
-                displayNotes();
-            } else {
-                alert('Failed to delete note');
             }
         }
 

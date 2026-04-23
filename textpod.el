@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Pavel Popov
 
 ;; Author: Pavel Popov
-;; Version: 0.1.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "28.1") (plz "0.7"))
 ;; Keywords: convenience, comm
 
@@ -43,30 +43,58 @@ When non-nil, sent as an Authorization header with write requests."
   :type '(choice (const :tag "None" nil) string)
   :group 'textpod)
 
+(defcustom textpod-id-property "TEXTPOD_ID"
+  "Name of the Org property used to store the Textpod note id."
+  :type 'string
+  :group 'textpod)
+
+(defcustom textpod-id-prefix ""
+  "Prefix prepended to Textpod note ids when stored in the Org property.
+The prefix is stripped before sending requests to the Textpod server."
+  :type 'string
+  :group 'textpod)
+
 ;;;; Commands
+
+;;;###autoload
+(defun textpod-set-id (&optional time)
+  "Set `textpod-id-property' on the current heading without sending to server.
+With prefix arg, prompt for TIME with `org-read-date'; otherwise use now.
+The id is derived from TIME as YYYYMMDDhhmmss and prefixed with
+`textpod-id-prefix'.  Useful for back-dating notes before uploading."
+  (interactive
+   (list (when current-prefix-arg
+           (org-read-date t t nil "Timestamp: "))))
+  (let* ((time (or time (current-time)))
+         (id (format-time-string "%Y%m%d%H%M%S" time))
+         (value (concat textpod-id-prefix id)))
+    (save-excursion
+      (org-back-to-heading t)
+      (org-set-property textpod-id-property value))
+    (message "Set %s to %s" textpod-id-property value)))
 
 ;;;###autoload
 (defun textpod-open-current-note ()
   "Open the current heading's Textpod note in a browser."
   (interactive)
-  (let ((id (org-entry-get nil "TEXTPOD_ID" t)))
+  (let ((id (textpod--strip-prefix (org-entry-get nil textpod-id-property t))))
     (unless id
-      (user-error "No TEXTPOD_ID property on this heading"))
+      (user-error "No %s property on this heading" textpod-id-property))
     (browse-url (format "%s/note/%s" textpod-url id))))
 
 
 ;;;###autoload
 (defun textpod-org-heading-to-note ()
   "Send the current heading's subtree to Textpod.
-Finds the nearest ancestor heading that has a TEXTPOD_ID property
+Finds the nearest ancestor heading that has a `textpod-id-property'
 \(or the current heading itself) and sends it via
-`textpod-org-region-to-note'.  If no ancestor has TEXTPOD_ID,
+`textpod-org-region-to-note'.  If no ancestor has the property,
 uses the current top-level heading."
   (interactive)
   (save-excursion
     (org-back-to-heading t)
-    ;; Walk up to find a heading with TEXTPOD_ID, stop at level 1.
-    (while (and (not (org-entry-get nil "TEXTPOD_ID"))
+    ;; Walk up to find a heading with textpod-id-property, stop at level 1.
+    (while (and (not (org-entry-get nil textpod-id-property))
                 (> (org-current-level) 1))
       (org-up-heading-safe))
     (let ((beg (point))
@@ -84,10 +112,11 @@ uses the current top-level heading."
                              (goto-char beg)
                              (org-back-to-heading t)
                              (point-marker))))
-         (existing-id (with-current-buffer buf
-                        (save-excursion
-                          (goto-char heading-marker)
-                          (org-entry-get nil "TEXTPOD_ID"))))
+         (existing-id (textpod--strip-prefix
+                       (with-current-buffer buf
+                         (save-excursion
+                           (goto-char heading-marker)
+                           (org-entry-get nil textpod-id-property)))))
          (org-text (buffer-substring-no-properties beg end))
          (org-text (textpod--replace-checkboxes org-text))
          (org-text (textpod--strip-statistics-cookies org-text))
@@ -114,11 +143,20 @@ uses the current top-level heading."
                   (with-current-buffer (marker-buffer heading-marker)
                     (save-excursion
                       (goto-char heading-marker)
-                      (org-set-property "TEXTPOD_ID" id)))
+                      (org-set-property textpod-id-property
+                                        (concat textpod-id-prefix id))))
                   (message "Note sent to Textpod: %s" id)))
         :else (lambda (err) (message "Textpod error: %s" err))))))
 
 ;;;; Functions
+
+(defun textpod--strip-prefix (id)
+  "Return ID with `textpod-id-prefix' stripped, or nil if ID is nil."
+  (when id
+    (if (and (not (string-empty-p textpod-id-prefix))
+             (string-prefix-p textpod-id-prefix id))
+        (substring id (length textpod-id-prefix))
+      id)))
 
 (defun textpod--headers ()
   "Return HTTP headers for Textpod requests."
