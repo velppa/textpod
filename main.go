@@ -130,7 +130,6 @@ func main() {
 	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
 	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
 	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
-	mux.HandleFunc("/", server.fallbackMD)
 
 	var handler http.Handler = mux
 	if cfg.BasePath != "" {
@@ -290,21 +289,6 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 	return false
-}
-
-func (s *Server) fallbackMD(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	if strings.HasSuffix(path, ".md") {
-		filename := path
-		if i := strings.LastIndex(path, "/"); i != -1 {
-			filename = path[i+1:]
-		}
-		location := fmt.Sprintf("%s?q=%s", s.BasePath, url.QueryEscape(filename))
-		w.Header().Set("Location", location)
-		w.WriteHeader(http.StatusSeeOther)
-		return
-	}
-	http.NotFound(w, r)
 }
 
 func (s *Server) getNotes(w http.ResponseWriter, r *http.Request) {
@@ -942,22 +926,18 @@ func mdToHTML(markdown, basePath string) string {
 		return ""
 	}
 	out := buf.String()
-	out = rewriteMDLinks(out, basePath)
+	out = rewriteFileLinks(out, basePath)
 	out = rewriteAttachmentLinks(out, basePath)
 	return processTags(out, basePath)
 }
 
-var mdLinkRe = regexp.MustCompile(`href="([^"]*\.md)"`)
+var internalLinkRe = regexp.MustCompile(`href="((\.\.\/)?([^"]*)\.(md|html)(#.*)?)"`)
 
-func rewriteMDLinks(htmlStr, basePath string) string {
-	return mdLinkRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
-		sub := mdLinkRe.FindStringSubmatch(match)
-		href := sub[1]
-		filename := href
-		if i := strings.LastIndex(href, "/"); i != -1 {
-			filename = href[i+1:]
-		}
-		return fmt.Sprintf(`href="%s?q=%s"`, basePath, url.QueryEscape(filename))
+func rewriteFileLinks(htmlStr, basePath string) string {
+	return internalLinkRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
+		sub := internalLinkRe.FindStringSubmatch(match)
+		filename := sub[3]
+		return fmt.Sprintf(`href="%s?q=%s."`, basePath, url.QueryEscape(filename))
 	})
 }
 

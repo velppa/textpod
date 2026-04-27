@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Pavel Popov
 
 ;; Author: Pavel Popov
-;; Version: 0.3.0
+;; Version: 0.3.1
 ;; Package-Requires: ((emacs "28.1") (plz "0.7"))
 ;; Keywords: convenience, comm
 
@@ -121,13 +121,13 @@ uses the current top-level heading."
          (org-text (textpod--replace-checkboxes org-text))
          (org-text (textpod--strip-statistics-cookies org-text))
          (org-text (textpod--process-details org-text))
-         (md (let ((org-export-with-toc nil)
-                   (org-export-with-todo-keywords nil)
-                   (org-md-headline-style 'atx))
-               (org-export-string-as org-text 'md t)))
-         (md (textpod--wrap-details md))
-         (md (textpod--upload-local-links md default-directory))
-         (json-body (json-encode md)))
+         (out (let ((org-export-with-toc nil)
+                    (org-export-with-todo-keywords nil)
+                    (org-md-headline-style 'atx))
+                (org-export-string-as org-text 'html t)))
+         (out (textpod--wrap-details out))
+         (out (textpod--upload-local-links out default-directory))
+         (json-body (json-encode out)))
     (if existing-id
         (plz 'put (concat textpod-url "/notes/" existing-id)
           :headers (textpod--headers)
