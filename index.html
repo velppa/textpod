@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <link rel="shortcut icon" href="{{FAVICON}}" />
     <style>
+        {{TUFTE_CSS}}
         {{SHARED_CSS}}
 
         html {
@@ -13,7 +14,7 @@
         }
 
         #editor {
-            width: 100%;
+            width: 55%;
             height: 200px;
             font-family: monospace;
             font-size: inherit;
@@ -23,6 +24,7 @@
         }
 
         #submitContainer {
+            width: 55%;
             margin-bottom: 1.5em;
             text-align: right;
         }
@@ -36,25 +38,26 @@
             cursor: pointer;
         }
 
-        .note> :nth-last-child(2) {
-            margin-bottom: 0.5em;
+        section.note p.subtitle {
+            font-size: 1.1rem;
+            font-style: normal;
+            font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
+            color: var(--color-secondary);
+            margin-top: -0.5rem;
+            margin-bottom: 1.5rem;
         }
 
-        .note .noteMetadata {
-            font-size: 0.9em;
-            font-family: monospace;
-            color: var(--color-secondary);
-            padding-bottom: 0.75em;
-            border-bottom: 1px solid var(--color-bg-secondary);
-        }
-
-        .note .noteMetadata a {
-            color: var(--color-secondary);
+        section.note p.subtitle a {
+            color: inherit;
             text-decoration: none;
         }
 
-        .note .noteMetadata a:hover {
+        section.note p.subtitle a:hover {
             text-decoration: underline;
+        }
+
+        section.note p.subtitle a::after {
+            content: none !important;
         }
 
         footer {
@@ -105,6 +108,47 @@
             displayNotes();
         });
 
+        // Insert a tufte-style subtitle paragraph immediately after the
+        // first heading in the note's HTML.  When there is no heading,
+        // prepend the subtitle so the metadata is still visible.
+        function injectSubtitle(html, inner) {
+            let out = html;
+            let tagsInner = '';
+            const headingRe = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i;
+            const headMatch = out.match(headingRe);
+            if (headMatch) {
+                const headInner = headMatch[1];
+                const tagsRe = /\s*<span class="tags">([\s\S]*?)<\/span>\s*/i;
+                const tagsMatch = headInner.match(tagsRe);
+                if (tagsMatch) {
+                    const anchorRe = /<a class="tag" href="([^"]*)">([^<]+)<\/a>/gi;
+                    const links = [...tagsMatch[1].matchAll(anchorRe)]
+                        .map((m, i) => {
+                            const text = i === 0 ? `:${m[2]}:` : `${m[2]}:`;
+                            return `<a class="tag" href="${m[1]}">${text}</a>`;
+                        });
+                    if (links.length) {
+                        tagsInner = `<span class="tags">${links.join('')}</span>`;
+                    }
+                    const cleaned = headInner.slice(0, tagsMatch.index)
+                        + headInner.slice(tagsMatch.index + tagsMatch[0].length);
+                    const headStart = headMatch.index;
+                    const innerStart = headStart + headMatch[0].indexOf(headInner);
+                    out = out.slice(0, innerStart) + cleaned
+                        + out.slice(innerStart + headInner.length);
+                }
+            }
+            const combined = tagsInner ? `${inner} &middot; ${tagsInner}` : inner;
+            const subtitle = `<p class="subtitle">${combined}</p>`;
+            const closeRe = /<\/h[1-6]>/i;
+            const m = out.match(closeRe);
+            if (m) {
+                const idx = m.index + m[0].length;
+                return out.slice(0, idx) + subtitle + out.slice(idx);
+            }
+            return subtitle + out;
+        }
+
         const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         function formatTimestamp(ts) {
             const d = new Date(ts.replace(' ', 'T'));
@@ -122,12 +166,7 @@
                 notesDiv.innerHTML = notes
                     .filter(note => !searchQuery || note.content.toLowerCase().includes(searchQuery.toLowerCase()) || note.timestamp.includes(searchQuery))
                     .map((note, i) => `
-                    <div class="note">
-                        ${note.html}
-                        <div class="noteMetadata">
-                            <a href="${BASE_PATH}/note/${note.id}"><time datetime="${note.timestamp}">${formatTimestamp(note.timestamp)}</time></a>
-                        </div>
-                    </div>`)
+                    <section class="note">${injectSubtitle(note.html, `<a href="${BASE_PATH}/note/${note.id}"><time datetime="${note.timestamp}">${formatTimestamp(note.timestamp)}</time></a>`)}</section>`)
                     .join('');
             }
             buildTOC();

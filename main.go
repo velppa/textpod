@@ -3,12 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"mime/multipart"
@@ -28,7 +29,7 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/renderer/html"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 )
 
 //go:embed index.html
@@ -39,6 +40,12 @@ var faviconSVG []byte
 
 //go:embed shared.css
 var sharedCSS string
+
+//go:embed tufte.css
+var tufteCSS string
+
+//go:embed et-book
+var etBookFS embed.FS
 
 const noteSeparator = "\u000C"
 const contentLengthLimit = 500 * 1024 * 1024
@@ -109,6 +116,10 @@ func main() {
 	htmlStr := strings.ReplaceAll(indexHTML, "{{FAVICON}}", "data:image/svg+xml;base64,"+favicon)
 	htmlStr = strings.ReplaceAll(htmlStr, "{{BASE_PATH}}", cfg.BasePath)
 
+	// tufte.css contains @font-face url("{{BASE_PATH}}/et-book/...") refs
+	// so font URLs resolve under the base-path-mounted route.
+	tufteCSS = strings.ReplaceAll(tufteCSS, "{{BASE_PATH}}", cfg.BasePath)
+
 	server := &Server{
 		Config: cfg,
 		HTML:   htmlStr,
@@ -130,6 +141,7 @@ func main() {
 	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
 	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
 	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
+	mux.Handle("GET /et-book/", http.FileServerFS(etBookFS))
 
 	var handler http.Handler = mux
 	if cfg.BasePath != "" {
@@ -249,7 +261,8 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		readonly = !hasValidToken(r, s.Token)
 	}
 
-	out := strings.ReplaceAll(s.HTML, "{{SHARED_CSS}}", sharedCSS)
+	out := strings.ReplaceAll(s.HTML, "{{TUFTE_CSS}}", tufteCSS)
+	out = strings.ReplaceAll(out, "{{SHARED_CSS}}", sharedCSS)
 	if readonly {
 		out = strings.ReplaceAll(out, "{{READONLY}}", "true")
 	} else {
@@ -268,8 +281,10 @@ func getCookieValue(r *http.Request, name string) (string, bool) {
 }
 
 func hasValidToken(r *http.Request, token string) bool {
-	if v, ok := getCookieValue(r, "textpod_token"); ok && v == token {
-		return true
+	for _, c := range r.Cookies() {
+		if c.Name == "textpod_token" && c.Value == token {
+			return true
+		}
 	}
 	auth := r.Header.Get("Authorization")
 	if rest, ok := strings.CutPrefix(auth, "Bearer "); ok {
@@ -304,6 +319,16 @@ func (s *Server) getNotes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
+	if provided := r.URL.Query().Get("token"); provided != "" && s.HasToken && provided == s.Token {
+		cookiePath := "/"
+		if s.BasePath != "" {
+			cookiePath = s.BasePath
+		}
+		w.Header().Set("Set-Cookie", fmt.Sprintf("textpod_token=%s; Path=%s; HttpOnly; SameSite=Strict", provided, cookiePath))
+		w.Header().Set("Location", r.URL.Path)
+		w.WriteHeader(http.StatusSeeOther)
+		return
+	}
 	id := r.PathValue("id")
 	s.mu.Lock()
 	var note *Note
@@ -319,15 +344,17 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("note with id %s not found", id), http.StatusNotFound)
 		return
 	}
-	title := noteTitle(note)
+	title := html.EscapeString(noteTitle(note))
 	readonly := s.HasToken && !hasValidToken(r, s.Token)
 	contentJSON, _ := json.Marshal(note.Content)
 	idJSON, _ := json.Marshal(note.ID)
 	basePathJSON, _ := json.Marshal(s.BasePath)
-	editControls := ""
+	subtitleInner := fmt.Sprintf(`<time datetime="%s">%s</time> &middot; <a href="%s">back</a>`,
+		note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
 	if !readonly {
-		editControls = ` &middot; <a href="#" id="editLink">edit</a> &middot; <a href="#" id="deleteLink">delete</a>`
+		subtitleInner += ` &middot; <a href="#" id="editLink">edit</a> &middot; <a href="#" id="deleteLink">delete</a>`
 	}
+	noteBody := injectSubtitle(note.HTML, subtitleInner)
 	page := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -335,9 +362,10 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
     <meta name="color-scheme" content="light dark" />
     <style>
         %s
+        %s
         #editor {
             width: 100%%;
-            min-height: 300px;
+            height: calc(100vh - 6em);
             font-family: monospace;
             font-size: inherit;
             padding: 1em;
@@ -361,17 +389,13 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <nav id="toc"></nav>
-    <div id="noteView" class="note">%s</div>
+    <section id="noteView" class="note">%s</section>
     <div id="noteEdit" style="display:none">
         <textarea id="editor"></textarea>
         <div id="editActions">
             <button id="cancelButton" type="button">Cancel</button>
             <button id="submitButton" type="button">Submit</button>
         </div>
-    </div>
-    <div class="metadata">
-        <time datetime="%s">%s</time>
-        &middot; <a href="%s">back</a>%s
     </div>
     <script>
         (function() {
@@ -434,6 +458,8 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
                     view.style.display = 'none';
                     edit.style.display = '';
                     editor.focus();
+                    editor.setSelectionRange(0, 0);
+                    editor.scrollTop = 0;
                 });
                 cancelButton.addEventListener('click', () => {
                     edit.style.display = 'none';
@@ -466,8 +492,7 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
     </script>
 </body>
 </html>`,
-		title, sharedCSS, note.HTML,
-		note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath, editControls,
+		title, tufteCSS, sharedCSS, noteBody,
 		idJSON, basePathJSON, contentJSON)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, page)
@@ -878,11 +903,71 @@ func formatTimestampWithDay(ts string) string {
 	return t.Format(timestampDisplayLayout)
 }
 
-var headingContentRe = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)`)
+var (
+	headingContentRe = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)`)
+	htmlHeadingRe    = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`)
+	htmlTagStripRe   = regexp.MustCompile(`<[^>]+>`)
+	headingCloseRe   = regexp.MustCompile(`(?i)</h[1-6]>`)
+	headingFullRe    = regexp.MustCompile(`(?is)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
+	headingTagsSpan  = regexp.MustCompile(`(?is)\s*<span class="tags">(.*?)</span>\s*`)
+	tagAnchorRe      = regexp.MustCompile(`(?is)<a class="tag" href="([^"]*)">([^<]+)</a>`)
+)
+
+// injectSubtitle inserts a Tufte-style <p class="subtitle">…</p> right
+// after the first closing heading tag in noteHTML.  Tag chips already
+// rendered inside that heading are extracted and re-rendered as
+// `:Tag:`-style entries appended to the subtitle so the heading row
+// stays clean and the tags live with the rest of the metadata.
+func injectSubtitle(noteHTML, inner string) string {
+	out := noteHTML
+	tagsInner := ""
+	if loc := headingFullRe.FindStringSubmatchIndex(out); loc != nil {
+		innerStart, innerEnd := loc[4], loc[5]
+		headInner := out[innerStart:innerEnd]
+		if m := headingTagsSpan.FindStringSubmatchIndex(headInner); m != nil {
+			tagsHTML := headInner[m[2]:m[3]]
+			tagsInner = formatTagsAsColons(tagsHTML)
+			cleaned := headInner[:m[0]] + headInner[m[1]:]
+			out = out[:innerStart] + cleaned + out[innerEnd:]
+		}
+	}
+	combined := inner
+	if tagsInner != "" {
+		combined += " &middot; " + tagsInner
+	}
+	subtitle := `<p class="subtitle">` + combined + `</p>`
+	loc := headingCloseRe.FindStringIndex(out)
+	if loc == nil {
+		return subtitle + out
+	}
+	return out[:loc[1]] + subtitle + out[loc[1]:]
+}
+
+func formatTagsAsColons(tagsHTML string) string {
+	matches := tagAnchorRe.FindAllStringSubmatch(tagsHTML, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(matches))
+	for i, m := range matches {
+		text := m[2] + ":"
+		if i == 0 {
+			text = ":" + text
+		}
+		parts = append(parts, fmt.Sprintf(`<a class="tag" href="%s">%s</a>`, m[1], text))
+	}
+	return `<span class="tags">` + strings.Join(parts, "") + `</span>`
+}
 
 func noteTitle(n *Note) string {
 	if m := headingContentRe.FindStringSubmatch(n.Content); m != nil {
 		return strings.TrimSpace(m[1])
+	}
+	if m := htmlHeadingRe.FindStringSubmatch(n.Content); m != nil {
+		text := htmlTagStripRe.ReplaceAllString(m[1], "")
+		if s := strings.TrimSpace(text); s != "" {
+			return s
+		}
 	}
 	if i := strings.IndexByte(n.Content, '\n'); i != -1 {
 		return strings.TrimSpace(n.Content[:i])
@@ -917,7 +1002,7 @@ func idToTimestamp(id string) (string, bool) {
 
 var md = goldmark.New(
 	goldmark.WithExtensions(extension.GFM),
-	goldmark.WithRendererOptions(html.WithUnsafe()),
+	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 )
 
 func mdToHTML(markdown, basePath string) string {
@@ -931,7 +1016,7 @@ func mdToHTML(markdown, basePath string) string {
 	return processTags(out, basePath)
 }
 
-var internalLinkRe = regexp.MustCompile(`href="((\.\.\/)?([^"]*)\.(md|html)(#.*)?)"`)
+var internalLinkRe = regexp.MustCompile(`href="((\.\.\/)?([^":/?#]*)\.(md|html)(#.*)?)"`)
 
 func rewriteFileLinks(htmlStr, basePath string) string {
 	return internalLinkRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
@@ -950,10 +1035,18 @@ func rewriteAttachmentLinks(htmlStr, basePath string) string {
 	return htmlStr
 }
 
-var h3Re = regexp.MustCompile(`(?s)<h3>(.*?)</h3>`)
+var h2Re = regexp.MustCompile(`(?s)<h2(?:\s[^>]*)?>(.*?)</h2>`)
 
 func wrapH3InDetails(htmlStr string) string {
-	locs := h3Re.FindAllStringSubmatchIndex(htmlStr, -1)
+	// Org/Tufte-exported notes use <article>/<section> wrappers; the
+	// H2 collapse must be applied to the level-2 <article> blocks
+	// instead of bare <h2> tags.  The note page renders these as
+	// articles (so H2s show up in the TOC); the index calls this to
+	// fold them.
+	if strings.Contains(htmlStr, "<article>") {
+		return collapseLevel2Articles(htmlStr)
+	}
+	locs := h2Re.FindAllStringSubmatchIndex(htmlStr, -1)
 	if len(locs) == 0 {
 		return htmlStr
 	}
@@ -966,17 +1059,17 @@ func wrapH3InDetails(htmlStr string) string {
 		before := htmlStr[last:start]
 		if inDetails {
 			b.WriteString(before)
-			b.WriteString("</details>\n")
+			b.WriteString("</section></details>\n")
 		} else {
 			b.WriteString(before)
 		}
 		inDetails = true
-		fmt.Fprintf(&b, "<details><summary>%s</summary>\n", htmlStr[titleStart:titleEnd])
+		fmt.Fprintf(&b, "<details><summary>%s</summary><section>\n", htmlStr[titleStart:titleEnd])
 		last = end
 	}
 	if inDetails {
 		b.WriteString(htmlStr[last:])
-		b.WriteString("</details>\n")
+		b.WriteString("</section></details>\n")
 	} else {
 		b.WriteString(htmlStr[last:])
 	}
@@ -986,7 +1079,61 @@ func wrapH3InDetails(htmlStr string) string {
 var (
 	tagRe        = regexp.MustCompile(`(^|\s)(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)`)
 	headingTagRe = regexp.MustCompile(`(?s)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
+	articleH2Re  = regexp.MustCompile(`(?s)<article>\s*<h2[^>]*>(.*?)</h2>`)
 )
+
+// collapseLevel2Articles rewrites every <article> block whose first
+// child is an <h2> into <details><summary>…</summary>…</details>.
+// Nested articles (level-3+ subtrees) are passed through untouched.
+// The scan tracks balanced <article>/</article> nesting so the wrap
+// terminates at the correct closing tag.
+func collapseLevel2Articles(s string) string {
+	var b strings.Builder
+	for {
+		loc := articleH2Re.FindStringSubmatchIndex(s)
+		if loc == nil {
+			b.WriteString(s)
+			return b.String()
+		}
+		articleStart, h2End := loc[0], loc[1]
+		titleStart, titleEnd := loc[2], loc[3]
+		// Find the matching </article> for the <article> at articleStart.
+		depth := 1
+		i := h2End
+		closeStart := -1
+		for i < len(s) {
+			openIdx := strings.Index(s[i:], "<article>")
+			closeIdx := strings.Index(s[i:], "</article>")
+			if closeIdx == -1 {
+				break
+			}
+			if openIdx != -1 && openIdx < closeIdx {
+				depth++
+				i += openIdx + len("<article>")
+				continue
+			}
+			depth--
+			if depth == 0 {
+				closeStart = i + closeIdx
+				break
+			}
+			i += closeIdx + len("</article>")
+		}
+		if closeStart == -1 {
+			b.WriteString(s)
+			return b.String()
+		}
+		body := s[h2End:closeStart]
+		title := s[titleStart:titleEnd]
+		b.WriteString(s[:articleStart])
+		b.WriteString("<details><summary>")
+		b.WriteString(title)
+		b.WriteString("</summary>")
+		b.WriteString(body)
+		b.WriteString("</details>\n")
+		s = s[closeStart+len("</article>"):]
+	}
+}
 
 func processTags(htmlStr, basePath string) string {
 	result := headingTagRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
@@ -1011,7 +1158,7 @@ func tagsToLinks(tagStr, basePath string) string {
 	tags := strings.Split(trimmed, ":")
 	parts := make([]string, 0, len(tags))
 	for _, t := range tags {
-		parts = append(parts, fmt.Sprintf(`<a class="tag" href="%s?q=%s">%s</a>`, basePath, url.QueryEscape(t), t))
+		parts = append(parts, fmt.Sprintf(`<a class="tag" href="%s?q=%s">%s</a>`, basePath, url.QueryEscape(":"+t+":"), t))
 	}
 	return strings.Join(parts, " ")
 }

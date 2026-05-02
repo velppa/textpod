@@ -25,6 +25,7 @@
 (require 'ox-md)
 (require 'rx)
 (require 'org)
+(require 'textpod-org-tufte)
 
 ;;;; Customization
 
@@ -124,7 +125,7 @@ uses the current top-level heading."
          (out (let ((org-export-with-toc nil)
                     (org-export-with-todo-keywords nil)
                     (org-md-headline-style 'atx))
-                (org-export-string-as org-text 'html t)))
+                (org-export-string-as org-text 'textpod-tufte-html t)))
          (out (textpod--wrap-details out))
          (out (textpod--upload-local-links out default-directory))
          (json-body (json-encode out)))
