@@ -66,15 +66,19 @@ Returns HTML unchanged if it isn't a string."
        ;; spans, so the outer `<span class="tag">' wrapper (which
        ;; contains nested `<') is skipped automatically — only the
        ;; per-tag inner spans are captured.
-       (let ((tags '())
-             (start 0))
-         (while (string-match "<span class=\"[^\"]+\">\\([^<]+\\)</span>"
-                              match start)
-           (push (match-string 1 match) tags)
-           (setq start (match-end 0)))
-         (if tags
-             (concat " :" (mapconcat #'identity (nreverse tags) ":") ":")
-           "")))
+       ;; `save-match-data' is required: the inner `string-match'
+       ;; would otherwise clobber the outer replace's match data,
+       ;; causing only a tail slice of the span to be substituted.
+       (save-match-data
+         (let ((tags '())
+               (start 0))
+           (while (string-match "<span class=\"[^\"]+\">\\([^<]+\\)</span>"
+                                match start)
+             (push (match-string 1 match) tags)
+             (setq start (match-end 0)))
+           (if tags
+               (concat " :" (mapconcat #'identity (nreverse tags) ":") ":")
+             ""))))
      html t t)))
 
 (defun textpod-org-tufte-headline (headline contents info)

@@ -1053,18 +1053,30 @@ func rewriteAttachmentLinks(htmlStr, basePath string) string {
 	return htmlStr
 }
 
-var h2Re = regexp.MustCompile(`(?s)<h2(?:\s[^>]*)?>(.*?)</h2>`)
+var (
+	// Match either a bare <h2>…</h2> or, for ox-html output, the
+	// enclosing <section><h2>…</h2> pair so the surrounding section
+	// gets replaced by <details> rather than left dangling.
+	sectionH2Re = regexp.MustCompile(`(?s)<section>\s*<h2(?:\s[^>]*)?>(.*?)</h2>`)
+	bareH2Re    = regexp.MustCompile(`(?s)<h2(?:\s[^>]*)?>(.*?)</h2>`)
+)
 
+// wrapH3InDetails turns each <h2> block on the index into a
+// collapsible <details>/<summary>.  Each <details> wraps the
+// content following the heading up to the next <h2> (or end of
+// input).  For ox-html notes the <h2> is wrapped in a <section>;
+// that wrapping section is consumed so the resulting markup has a
+// clean <details>…</details> boundary.
 func wrapH3InDetails(htmlStr string) string {
-	// Org/Tufte-exported notes use <article>/<section> wrappers; the
-	// H2 collapse must be applied to the level-2 <article> blocks
-	// instead of bare <h2> tags.  The note page renders these as
-	// articles (so H2s show up in the TOC); the index calls this to
-	// fold them.
-	if strings.Contains(htmlStr, "<article>") {
-		return collapseLevel2Articles(htmlStr)
+	if strings.Contains(htmlStr, "<section>") &&
+		sectionH2Re.MatchString(htmlStr) {
+		return wrapSectionH2InDetails(htmlStr)
 	}
-	locs := h2Re.FindAllStringSubmatchIndex(htmlStr, -1)
+	return wrapBareH2InDetails(htmlStr)
+}
+
+func wrapBareH2InDetails(htmlStr string) string {
+	locs := bareH2Re.FindAllStringSubmatchIndex(htmlStr, -1)
 	if len(locs) == 0 {
 		return htmlStr
 	}
@@ -1077,60 +1089,49 @@ func wrapH3InDetails(htmlStr string) string {
 		before := htmlStr[last:start]
 		if inDetails {
 			b.WriteString(before)
-			b.WriteString("</section></details>\n")
+			b.WriteString("</details>\n")
 		} else {
 			b.WriteString(before)
 		}
 		inDetails = true
-		fmt.Fprintf(&b, "<details><summary>%s</summary><section>\n", htmlStr[titleStart:titleEnd])
+		fmt.Fprintf(&b, "<details><summary>%s</summary>\n", htmlStr[titleStart:titleEnd])
 		last = end
 	}
+	b.WriteString(htmlStr[last:])
 	if inDetails {
-		b.WriteString(htmlStr[last:])
-		b.WriteString("</section></details>\n")
-	} else {
-		b.WriteString(htmlStr[last:])
+		b.WriteString("</details>\n")
 	}
 	return b.String()
 }
 
-var (
-	tagRe        = regexp.MustCompile(`(^|\s)(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)`)
-	headingTagRe = regexp.MustCompile(`(?s)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
-	articleH2Re  = regexp.MustCompile(`(?s)<article>\s*<h2[^>]*>(.*?)</h2>`)
-	// spanTagRe matches ox-html tag spans: <span class="tag"><span class="Blog">Blog</span></span>
-	spanTagRe    = regexp.MustCompile(`(?:&#xa0;|\s)*<span class="tag">(.+?)</span>\s*$`)
-	innerSpanRe  = regexp.MustCompile(`<span class="[^"]+">([^<]+)</span>`)
-)
-
-// collapseLevel2Articles rewrites every <article> block whose first
-// child is an <h2> into <details><summary>…</summary>…</details>.
-// Nested articles (level-3+ subtrees) are passed through untouched.
-// The scan tracks balanced <article>/</article> nesting so the wrap
-// terminates at the correct closing tag.
-func collapseLevel2Articles(s string) string {
+// wrapSectionH2InDetails consumes the <section> wrapper that
+// ox-html places around an <h2> headline, replacing it with a
+// <details> element whose body runs to the matching </section>.
+// The scan tracks balanced <section>/</section> nesting so the
+// inner outline-text section (also a <section>) doesn't terminate
+// the wrap prematurely.
+func wrapSectionH2InDetails(s string) string {
 	var b strings.Builder
 	for {
-		loc := articleH2Re.FindStringSubmatchIndex(s)
+		loc := sectionH2Re.FindStringSubmatchIndex(s)
 		if loc == nil {
 			b.WriteString(s)
 			return b.String()
 		}
-		articleStart, h2End := loc[0], loc[1]
+		sectionStart, h2End := loc[0], loc[1]
 		titleStart, titleEnd := loc[2], loc[3]
-		// Find the matching </article> for the <article> at articleStart.
 		depth := 1
 		i := h2End
 		closeStart := -1
 		for i < len(s) {
-			openIdx := strings.Index(s[i:], "<article>")
-			closeIdx := strings.Index(s[i:], "</article>")
+			openIdx := strings.Index(s[i:], "<section>")
+			closeIdx := strings.Index(s[i:], "</section>")
 			if closeIdx == -1 {
 				break
 			}
 			if openIdx != -1 && openIdx < closeIdx {
 				depth++
-				i += openIdx + len("<article>")
+				i += openIdx + len("<section>")
 				continue
 			}
 			depth--
@@ -1138,7 +1139,7 @@ func collapseLevel2Articles(s string) string {
 				closeStart = i + closeIdx
 				break
 			}
-			i += closeIdx + len("</article>")
+			i += closeIdx + len("</section>")
 		}
 		if closeStart == -1 {
 			b.WriteString(s)
@@ -1146,15 +1147,27 @@ func collapseLevel2Articles(s string) string {
 		}
 		body := s[h2End:closeStart]
 		title := s[titleStart:titleEnd]
-		b.WriteString(s[:articleStart])
+		b.WriteString(s[:sectionStart])
 		b.WriteString("<details><summary>")
 		b.WriteString(title)
 		b.WriteString("</summary>")
 		b.WriteString(body)
 		b.WriteString("</details>\n")
-		s = s[closeStart+len("</article>"):]
+		s = s[closeStart+len("</section>"):]
 	}
 }
+
+var (
+	// The trailing `([^A-Za-z0-9_@#]|$)` group enforces that the
+	// closing `:` of a tag block is not followed by another tag-char.
+	// Without it, input like `:line:column` would greedily match
+	// `:line:` (treating `line` as a tag) and drop `column`.
+	tagRe        = regexp.MustCompile(`(^|\s)(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)([^A-Za-z0-9_@#]|$)`)
+	headingTagRe = regexp.MustCompile(`(?s)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
+	// spanTagRe matches ox-html tag spans: <span class="tag"><span class="Blog">Blog</span></span>
+	spanTagRe    = regexp.MustCompile(`(?:&#xa0;|\s)*<span class="tag">(.+?)</span>\s*$`)
+	innerSpanRe  = regexp.MustCompile(`<span class="[^"]+">([^<]+)</span>`)
+)
 
 func processTags(htmlStr, basePath string) string {
 	result := headingTagRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
@@ -1163,9 +1176,11 @@ func processTags(htmlStr, basePath string) string {
 		// Try colon-format tags first (:Blog:)
 		if loc := tagRe.FindStringSubmatchIndex(inner); loc != nil {
 			tagStart, tagEnd := loc[4], loc[5]
+			trailStart := loc[6]
 			title := strings.TrimRight(inner[:tagStart], " \t")
 			tagsHTML := tagsToLinks(inner[tagStart:tagEnd], basePath)
-			return fmt.Sprintf(`%s<span>%s</span><span class="tags">%s</span>%s`, open, title, tagsHTML, close)
+			rest := inner[trailStart:]
+			return fmt.Sprintf(`%s<span>%s</span><span class="tags">%s</span>%s%s`, open, title, tagsHTML, rest, close)
 		}
 		// Try span-format tags from ox-html (<span class="tag"><span class="Blog">Blog</span></span>)
 		if loc := spanTagRe.FindStringSubmatchIndex(inner); loc != nil {
@@ -1186,7 +1201,7 @@ func processTags(htmlStr, basePath string) string {
 	})
 	return tagRe.ReplaceAllStringFunc(result, func(match string) string {
 		sub := tagRe.FindStringSubmatch(match)
-		return sub[1] + tagsToLinks(sub[2], basePath)
+		return sub[1] + tagsToLinks(sub[2], basePath) + sub[3]
 	})
 }
 
