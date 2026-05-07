@@ -127,6 +127,7 @@ uses the current top-level heading."
                     (org-md-headline-style 'atx))
                 (org-export-string-as org-text 'textpod-tufte-html t)))
          (out (textpod--wrap-details out))
+         (out (textpod--add-image-dimensions out default-directory))
          (out (textpod--upload-local-links out default-directory))
          (json-body (json-encode out)))
     (if existing-id
@@ -223,6 +224,33 @@ Each marker opens a new <details> block; the previous one is closed."
        "]")
    "" text))
 
+(defun textpod--add-image-dimensions (html base-dir)
+  "Add width/height attributes to <img> tags in HTML for retina displays.
+Reads actual pixel dimensions, halves them (assuming 2x retina),
+and sets explicit attributes so images display at logical size.
+BASE-DIR is used to resolve relative src paths."
+  (replace-regexp-in-string
+   (rx "<img src=\"" (group (+ (not "\""))) "\"" (group (* (not ">"))) ">")
+   (lambda (match)
+     (let* ((src (match-string 1 match))
+            (rest (match-string 2 match))
+            (abs-path (if (or (string-prefix-p "http:" src)
+                              (string-prefix-p "https:" src))
+                          nil
+                        (if (file-name-absolute-p src)
+                            src
+                          (expand-file-name src base-dir)))))
+       (if (and abs-path (file-exists-p abs-path))
+           (let ((size (image-size (create-image abs-path nil nil :scale 1) t)))
+             (if size
+                 (let ((w (/ (car size) 2))
+                       (h (/ (cdr size) 2)))
+                   (format "<img src=\"%s\" width=\"%d\" height=\"%d\"%s>"
+                           src w h rest))
+               match))
+         match)))
+   html))
+
 (defun textpod--auth-headers ()
   "Return auth headers (no Content-Type)."
   (when textpod-token
@@ -249,17 +277,39 @@ Skips upload if the asset already exists."
         :body `(file ,file-path)))
     (concat textpod-url "/assets/" name)))
 
-(defun textpod--upload-local-links (md base-dir)
-  "Find local file links in MD, upload them, rewrite to remote URLs.
+(defun textpod--upload-local-links (html base-dir)
+  "Find local file/image links in HTML, upload them, rewrite to remote URLs.
 BASE-DIR is the directory to resolve relative paths against.
-Returns the modified markdown string."
-  (let ((re (rx (or "![" "[")
-                (group (*? anything))
-                "]("
-                (group (*? anything))
-                ")")))
+Matches both HTML attributes (src=\"...\", href=\"...\") and markdown
+link syntax (![...](...), [...](...)). Returns the modified string."
+  (let ((md-re (rx (or "![" "[")
+                   (group (*? anything))
+                   "]("
+                   (group (*? anything))
+                   ")"))
+        (html-re (rx (or "src" "href") "=\""
+                     (group (*? anything))
+                     "\"")))
+    ;; First pass: HTML src/href attributes
+    (setq html
+          (replace-regexp-in-string
+           html-re
+           (lambda (match)
+             (let* ((path (match-string 1 match))
+                    (attr (substring match 0 (string-match-p "=\"" match)))
+                    (abs-path (if (file-name-absolute-p path)
+                                  path
+                                (expand-file-name path base-dir))))
+               (if (and (not (string-match-p (rx bos (or "http:" "https:")) path))
+                        (not (string-empty-p path))
+                        (file-exists-p abs-path))
+                   (let ((url (save-match-data (textpod--upload-asset abs-path))))
+                     (format "%s=\"%s\"" attr url))
+                 match)))
+           html))
+    ;; Second pass: markdown-style links (if any survive)
     (replace-regexp-in-string
-     re
+     md-re
      (lambda (match)
        (let* ((label (match-string 1 match))
               (path (match-string 2 match))
@@ -274,7 +324,7 @@ Returns the modified markdown string."
                    (format "![%s](%s)" label url)
                  (format "[%s](%s)" label url)))
            match)))
-     md)))
+     html)))
 
 ;;;; Footer
 

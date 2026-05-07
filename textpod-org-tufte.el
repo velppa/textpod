@@ -47,6 +47,36 @@ comments at blank lines and leak the closing `-->' as text.")
     (quote-block        . textpod-org-tufte-quote-block)
     (src-block          . textpod-org-tufte-src-block)))
 
+(defun textpod-org-tufte--tags-span-to-colons (html)
+  "Rewrite ox-html's `<span class=\"tag\">…</span>' block in HTML to
+`:tag1:tag2:' colon form.
+
+ox-html renders Org headline tags as nested spans:
+  <span class=\"tag\"><span class=\"t1\">t1</span>&#xa0;<span …>t2</span></span>
+The Textpod server's tag handler scans heading inner text for the
+`:Tag:' colon syntax, so we convert the span back to that form
+(prefixed with a single space) and let the server style it.
+Returns HTML unchanged if it isn't a string."
+  (if (not (stringp html))
+      html
+    (replace-regexp-in-string
+     "\\(?:&#xa0;\\|[ \t\n]\\)*<span class=\"tag\">\\(?:<span class=\"[^\"]+\">[^<]+</span>\\(?:&#xa0;\\)?\\)+</span>"
+     (lambda (match)
+       ;; The inner-tag regex requires `[^<]+' between the open/close
+       ;; spans, so the outer `<span class="tag">' wrapper (which
+       ;; contains nested `<') is skipped automatically — only the
+       ;; per-tag inner spans are captured.
+       (let ((tags '())
+             (start 0))
+         (while (string-match "<span class=\"[^\"]+\">\\([^<]+\\)</span>"
+                              match start)
+           (push (match-string 1 match) tags)
+           (setq start (match-end 0)))
+         (if tags
+             (concat " :" (mapconcat #'identity (nreverse tags) ":") ":")
+           "")))
+     html t t)))
+
 (defun textpod-org-tufte-headline (headline contents info)
   "Render headlines with <article>/<section> wrappers instead of
 the default <div class=\"outline-N\"> / <div class=\"outline-text-N\">.
@@ -56,15 +86,21 @@ etc.; only direct children of <section> get the 55%-column layout.
 The default ox-html wrappers are <div>s, so those rules never
 fire.  We swap:
 
-  <div ... class=\"outline-N\">          → <article>
+  <div ... class=\"outline-1\">          → <article>   (top-level only)
+  <div ... class=\"outline-N>1\">        → <section>
   <div ... class=\"outline-text-N\">     → <section>
 
-leaving headline tags and child subtree blocks untouched.
+leaving headline tags and child subtree blocks untouched.  Only
+the outermost top-level headline becomes an <article>; nested
+subheadings become <section>s so each h2 isn't wrapped in its own
+<article>.
 
 Falls back to `org-html-headline' for list-style headlines, where
 the output isn't a wrapper-div pair and rewriting would corrupt
 structure."
-  (let ((html (org-html-headline headline contents info)))
+  (let ((html (textpod-org-tufte--tags-span-to-colons
+               (org-html-headline headline contents info)))
+        (level (org-export-get-relative-level headline info)))
     (if (and (stringp html)
              (string-match
               "\\`<div id=\"outline-container-[^\"]+\" class=\"outline-[0-9]+\"[^>]*>"
@@ -82,7 +118,9 @@ structure."
                 (setq inner
                       (replace-regexp-in-string
                        "</div>" "</section>" inner))
-                (concat "<article>" inner "</article>\n"))
+                (if (= level 1)
+                    (concat "<article>" inner "</article>\n")
+                  (concat "<section>" inner "</section>\n")))
             html))
       html)))
 

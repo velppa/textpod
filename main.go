@@ -360,6 +360,7 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 <head>
     <title>%s - Textpod</title>
     <meta name="color-scheme" content="light dark" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
         %s
         %s
@@ -388,7 +389,6 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
     </style>
 </head>
 <body>
-    <nav id="toc"></nav>
     <section id="noteView" class="note">%s</section>
     <div id="noteEdit" style="display:none">
         <textarea id="editor"></textarea>
@@ -400,16 +400,19 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
     <script>
         (function() {
             const headings = document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6');
-            if (headings.length >= 2) {
-                const toc = document.getElementById('toc');
+            const subtitle = document.querySelector('.note .subtitle');
+            if (headings.length >= 2 && subtitle) {
                 const ul = document.createElement('ul');
+                ul.style.margin = '0';
+                ul.style.paddingLeft = '0';
                 const minLevel = Math.min(...[...headings].map(h => parseInt(h.tagName[1])));
                 headings.forEach((h, i) => {
                     const id = 'heading-' + i;
                     h.id = id;
                     const li = document.createElement('li');
                     const level = parseInt(h.tagName[1]) - minLevel;
-                    li.style.marginLeft = (level * 1.2) + 'em';
+                    li.style.marginLeft = (level * 0.6) + 'em';
+                    li.style.listStyle = 'none';
                     const a = document.createElement('a');
                     const text = h.querySelector('span') ? h.querySelector('span').textContent : h.textContent;
                     a.textContent = text.trim();
@@ -417,7 +420,10 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
                     li.appendChild(a);
                     ul.appendChild(li);
                 });
-                toc.appendChild(ul);
+                const box = document.createElement('aside');
+                box.className = 'note-toc';
+                box.appendChild(ul);
+                subtitle.parentNode.insertBefore(box, subtitle.nextSibling);
             }
 
             const NOTE_ID = %s;
@@ -1005,18 +1011,30 @@ var md = goldmark.New(
 	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 )
 
-func mdToHTML(markdown, basePath string) string {
-	var buf bytes.Buffer
-	if err := md.Convert([]byte(markdown), &buf); err != nil {
-		return ""
+func mdToHTML(content, basePath string) string {
+	var out string
+	if isHTML(content) {
+		out = content
+	} else {
+		var buf bytes.Buffer
+		if err := md.Convert([]byte(content), &buf); err != nil {
+			return ""
+		}
+		out = buf.String()
 	}
-	out := buf.String()
 	out = rewriteFileLinks(out, basePath)
 	out = rewriteAttachmentLinks(out, basePath)
 	return processTags(out, basePath)
 }
 
-var internalLinkRe = regexp.MustCompile(`href="((\.\.\/)?([^":/?#]*)\.(md|html)(#.*)?)"`)
+// isHTML reports whether content looks like pre-rendered HTML
+// (e.g. from the org Tufte exporter) rather than markdown.
+func isHTML(s string) bool {
+	t := strings.TrimSpace(s)
+	return strings.HasPrefix(t, "<")
+}
+
+var internalLinkRe = regexp.MustCompile(`href="((\.\.\/)?([^":/?#]*)\.(md|html)(#[^"]*)?)"`)
 
 func rewriteFileLinks(htmlStr, basePath string) string {
 	return internalLinkRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
@@ -1080,6 +1098,9 @@ var (
 	tagRe        = regexp.MustCompile(`(^|\s)(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)`)
 	headingTagRe = regexp.MustCompile(`(?s)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
 	articleH2Re  = regexp.MustCompile(`(?s)<article>\s*<h2[^>]*>(.*?)</h2>`)
+	// spanTagRe matches ox-html tag spans: <span class="tag"><span class="Blog">Blog</span></span>
+	spanTagRe    = regexp.MustCompile(`(?:&#xa0;|\s)*<span class="tag">(.+?)</span>\s*$`)
+	innerSpanRe  = regexp.MustCompile(`<span class="[^"]+">([^<]+)</span>`)
 )
 
 // collapseLevel2Articles rewrites every <article> block whose first
@@ -1139,11 +1160,27 @@ func processTags(htmlStr, basePath string) string {
 	result := headingTagRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
 		sub := headingTagRe.FindStringSubmatch(match)
 		open, inner, close := sub[1], sub[2], sub[3]
+		// Try colon-format tags first (:Blog:)
 		if loc := tagRe.FindStringSubmatchIndex(inner); loc != nil {
 			tagStart, tagEnd := loc[4], loc[5]
 			title := strings.TrimRight(inner[:tagStart], " \t")
 			tagsHTML := tagsToLinks(inner[tagStart:tagEnd], basePath)
 			return fmt.Sprintf(`%s<span>%s</span><span class="tags">%s</span>%s`, open, title, tagsHTML, close)
+		}
+		// Try span-format tags from ox-html (<span class="tag"><span class="Blog">Blog</span></span>)
+		if loc := spanTagRe.FindStringSubmatchIndex(inner); loc != nil {
+			title := strings.TrimRight(inner[:loc[0]], " \t\n")
+			spanContent := inner[loc[2]:loc[3]]
+			matches := innerSpanRe.FindAllStringSubmatch(spanContent, -1)
+			if len(matches) > 0 {
+				tags := make([]string, 0, len(matches))
+				for _, m := range matches {
+					tags = append(tags, m[1])
+				}
+				colonTags := ":" + strings.Join(tags, ":") + ":"
+				tagsHTML := tagsToLinks(colonTags, basePath)
+				return fmt.Sprintf(`%s<span>%s</span><span class="tags">%s</span>%s`, open, title, tagsHTML, close)
+			}
 		}
 		return fmt.Sprintf("%s<span>%s</span>%s", open, inner, close)
 	})

@@ -4,6 +4,7 @@
 <head>
     <title>Textpod</title>
     <meta name="color-scheme" content="light dark" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="shortcut icon" href="{{FAVICON}}" />
     <style>
         {{TUFTE_CSS}}
@@ -11,6 +12,21 @@
 
         html {
             height: 100%;
+        }
+
+        html, body {
+            overflow-x: hidden;
+        }
+
+        /* Reserve space on the left for the fixed #toc sidebar so
+         * note content doesn't slide underneath it. */
+        @media (min-width: 1101px) {
+            body {
+                margin-left: 17%;
+                margin-right: 0;
+                padding-left: 1.5%;
+                width: 81%;
+            }
         }
 
         #editor {
@@ -58,6 +74,13 @@
 
         section.note p.subtitle a::after {
             content: none !important;
+        }
+
+        @media (max-width: 760px) {
+            #editor,
+            #submitContainer {
+                width: 100%;
+            }
         }
 
         footer {
@@ -174,9 +197,17 @@
 
         function buildTOC() {
             const toc = document.getElementById('toc');
+            const prevQuery = (toc.querySelector('input.toc-search') || {}).value || '';
             toc.innerHTML = '';
             const headings = document.querySelectorAll('#notes .note h1, #notes .note h2');
             if (headings.length < 2) return;
+
+            const search = document.createElement('input');
+            search.type = 'search';
+            search.className = 'toc-search';
+            search.placeholder = 'Filter…';
+            search.value = prevQuery;
+
             const ul = document.createElement('ul');
             headings.forEach((h, i) => {
                 const id = 'heading-' + i;
@@ -189,7 +220,18 @@
                 li.appendChild(a);
                 ul.appendChild(li);
             });
+
+            const applyFilter = () => {
+                const q = search.value.trim().toLowerCase();
+                ul.querySelectorAll('li').forEach(li => {
+                    li.style.display = !q || li.textContent.toLowerCase().includes(q) ? '' : 'none';
+                });
+            };
+            search.addEventListener('input', applyFilter);
+
+            toc.appendChild(search);
             toc.appendChild(ul);
+            applyFilter();
         }
 
         // saves a new note and refreshes the page
