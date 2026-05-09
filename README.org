@@ -1,0 +1,63 @@
+#+title: Textpod (Go fork)
+
+#+begin_important
+This is a fork of [[https://github.com/freetonik/textpod][freetonik/textpod]], originally written in Rust and rewritten in Go, modified to my liking.
+Details in [[https://finita.myaddr.dev/notes?q=textpod.md][my public notes linked to Textpod]].
+#+end_important
+
+Local, web-based note-publishing app inspired by "One Big Text File"
+idea.
+
+- Single page with all notes and a simple entry form (Markdown)
+- All notes are stored in a single =notes.md= file, notes separated by ^L and can be in Markdown or HTML formats
+- Search/filtering when you start typing with =/=
+- Start a link with =+= and Textpod will save a local single-page copy (via [[https://github.com/Y2Z/monolith][monolith]])
+- File and image attachments
+- Optional =--token= flag for read-only public access with authenticated writes
+- =--base-path= for serving behind a reverse proxy under a sub-path
+- Auto-reload when =notes.md= is changed externally
+- =:tag:= syntax turned into clickable filter links
+- =+url= and =+[label](url)= snapshot syntax for archiving pages
+
+** Build
+Requires Go 1.22+ (uses =net/http= method-prefixed routes).
+
+#+begin_src sh
+go install github.com/velppa/textpod@latest
+#+end_src
+
+Or from a local checkout:
+
+#+begin_src sh
+go build -o textpod .
+#+end_src
+
+** Usage
+#+begin_src sh
+cd path/to/textpod
+textpod --token '*********' --base-path /notes
+#+end_src
+
+Flags:
+
+- =--base-directory DIR= – =chdir= to =DIR= before starting
+- =--port= – port number (default =3000=)
+- =--listen= – listen address (default =127.0.0.1=)
+- =--notes-file= – notes file (default =notes.md=)
+- =--token= – require token for writes; without one, the UI is read-only
+- =--base-path= – URL prefix when served behind a reverse proxy (e.g. =/notes=)
+
+Example of live results are here – https://hotter.myaddr.dev/notes.
+
+* textpod.el
+[[file:textpod.el][textpod.el]] is a companion Emacs package to seamlessly work with notes. Especially
+handy with Org Roam.
+
+#+begin_src elisp
+(use-package textpod
+  :config
+  (setq textpod-id-property "ID"
+        textpod-id-prefix "textpod_"
+        textpod-token (cadr (auth-source-user-and-password "finita.myaddr.dev" "textpod"))
+        textpod-url "https://finita.myaddr.dev/notes"))
+#+end_src
