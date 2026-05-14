@@ -168,6 +168,106 @@ func TestWrapH3InDetailsNoH2(t *testing.T) {
 	}
 }
 
+func TestRewriteFileLinks(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		basePath string
+		want     string
+	}{
+		{
+			name: "bare html link",
+			in:   `<a href="foo.html">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "bare md link",
+			in:   `<a href="foo.md">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "parent-dir prefix",
+			in:   `<a href="../foo.html">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "multiple parent-dir prefix",
+			in:   `<a href="../../foo.html">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "subdir path",
+			in:   `<a href="reference/foo.html">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "nested subdir path",
+			in:   `<a href="a/b/c/foo.md">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "non-ID anchor dropped",
+			in:   `<a href="foo.html#section">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "ID anchor maps to note id",
+			in:   `<a href="foo.html#ID-12345">x</a>`,
+			want: `<a href="/note/12345">x</a>`,
+		},
+		{
+			name: "ID anchor in subdir path (regression)",
+			in:   `<a href="reference/the_unreasonable_effectiveness_of_html.html#ID-20260514T125132.987905">x</a>`,
+			want: `<a href="/note/20260514T125132.987905">x</a>`,
+		},
+		{
+			name:     "ID anchor with basePath",
+			in:       `<a href="foo.html#ID-abc">x</a>`,
+			basePath: "/notes",
+			want:     `<a href="/notes/note/abc">x</a>`,
+		},
+		{
+			name:     "bare link with basePath",
+			in:       `<a href="foo.md">x</a>`,
+			basePath: "/notes",
+			want:     `<a href="/notes?q=foo.">x</a>`,
+		},
+		{
+			name: "external http link untouched",
+			in:   `<a href="http://example.com/foo.html">x</a>`,
+			want: `<a href="http://example.com/foo.html">x</a>`,
+		},
+		{
+			name: "external https link untouched",
+			in:   `<a href="https://example.com/foo.md#x">x</a>`,
+			want: `<a href="https://example.com/foo.md#x">x</a>`,
+		},
+		{
+			name: "non html/md extension untouched",
+			in:   `<a href="foo.pdf">x</a>`,
+			want: `<a href="foo.pdf">x</a>`,
+		},
+		{
+			name: "multiple links one pass",
+			in:   `<a href="a.html">a</a> <a href="b.md#ID-XYZ">b</a>`,
+			want: `<a href="?q=a.">a</a> <a href="/note/XYZ">b</a>`,
+		},
+		{
+			name: "filename with special chars url-escaped",
+			in:   `<a href="foo bar.html">x</a>`,
+			want: `<a href="?q=foo+bar.">x</a>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rewriteFileLinks(tc.in, tc.basePath)
+			if got != tc.want {
+				t.Errorf("rewriteFileLinks(%q, %q) =\n  got:  %q\n  want: %q", tc.in, tc.basePath, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProcessTagsSpanFormat(t *testing.T) {
 	in := `<h2>Title&#xa0;<span class="tag">` +
 		`<span class="Blog">Blog</span>&#xa0;` +

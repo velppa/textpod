@@ -1035,12 +1035,21 @@ func isHTML(s string) bool {
 	return strings.HasPrefix(t, "<")
 }
 
-var internalLinkRe = regexp.MustCompile(`href="((\.\.\/)?([^":/?#]*)\.(md|html)(#[^"]*)?)"`)
+var internalLinkRe = regexp.MustCompile(`href="((?:\.\./)*([^":?#]+)\.(md|html)(#[^"]*)?)"`)
 
 func rewriteFileLinks(htmlStr, basePath string) string {
 	return internalLinkRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
 		sub := internalLinkRe.FindStringSubmatch(match)
-		filename := sub[3]
+		pathNoExt := sub[2]
+		anchor := sub[4]
+		if strings.HasPrefix(anchor, "#ID-") {
+			id := anchor[len("#ID-"):]
+			return fmt.Sprintf(`href="%s/note/%s"`, basePath, id)
+		}
+		filename := pathNoExt
+		if i := strings.LastIndex(filename, "/"); i >= 0 {
+			filename = filename[i+1:]
+		}
 		return fmt.Sprintf(`href="%s?q=%s."`, basePath, url.QueryEscape(filename))
 	})
 }
