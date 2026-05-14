@@ -227,7 +227,7 @@ func loadNotes(file, basePath string) []Note {
 			timestamp = time.Now().Format(timestampLayout)
 			content = block
 		}
-		htmlRendered := mdToHTML(content, basePath)
+		htmlRendered := noteToHTML(content, basePath)
 		notes = append(notes, Note{
 			ID:        timestampToID(timestamp),
 			Timestamp: timestamp,
@@ -534,7 +534,7 @@ func (s *Server) updateNoteByID(w http.ResponseWriter, r *http.Request) {
 	for i := range s.Notes {
 		if s.Notes[i].ID == id {
 			s.Notes[i].Content = processed
-			s.Notes[i].HTML = mdToHTML(processed, s.BasePath)
+			s.Notes[i].HTML = noteToHTML(processed, s.BasePath)
 			created = false
 			break
 		}
@@ -548,7 +548,7 @@ func (s *Server) updateNoteByID(w http.ResponseWriter, r *http.Request) {
 			ID:        id,
 			Timestamp: ts,
 			Content:   processed,
-			HTML:      mdToHTML(processed, s.BasePath),
+			HTML:      noteToHTML(processed, s.BasePath),
 		})
 		sort.Slice(s.Notes, func(i, j int) bool { return s.Notes[i].Timestamp < s.Notes[j].Timestamp })
 	}
@@ -618,7 +618,7 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 		ID:        id,
 		Timestamp: timestamp,
 		Content:   content,
-		HTML:      mdToHTML(content, s.BasePath),
+		HTML:      noteToHTML(content, s.BasePath),
 	}
 
 	s.mu.Lock()
@@ -889,7 +889,7 @@ func (s *Server) runDownloads(links [][2]string, noteID string) {
 			if s.Notes[i].ID == noteID {
 				old := fmt.Sprintf("([local copy](%s/%s))", s.BasePath, fp)
 				s.Notes[i].Content = strings.ReplaceAll(s.Notes[i].Content, old, "(local copy failed)")
-				s.Notes[i].HTML = mdToHTML(s.Notes[i].Content, s.BasePath)
+				s.Notes[i].HTML = noteToHTML(s.Notes[i].Content, s.BasePath)
 				break
 			}
 		}
@@ -1011,7 +1011,7 @@ var md = goldmark.New(
 	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 )
 
-func mdToHTML(content, basePath string) string {
+func noteToHTML(content, basePath string) string {
 	var out string
 	if isHTML(content) {
 		out = content
@@ -1024,6 +1024,7 @@ func mdToHTML(content, basePath string) string {
 	}
 	out = rewriteFileLinks(out, basePath)
 	out = rewriteAttachmentLinks(out, basePath)
+	out = addLazyLoadingToImages(out)
 	return processTags(out, basePath)
 }
 
@@ -1042,6 +1043,10 @@ func rewriteFileLinks(htmlStr, basePath string) string {
 		filename := sub[3]
 		return fmt.Sprintf(`href="%s?q=%s."`, basePath, url.QueryEscape(filename))
 	})
+}
+
+func addLazyLoadingToImages(htmlStr string) string {
+	return strings.ReplaceAll(htmlStr, "<img ", `<img loading="lazy" `)
 }
 
 func rewriteAttachmentLinks(htmlStr, basePath string) string {
