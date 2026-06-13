@@ -173,6 +173,7 @@ func TestRewriteFileLinks(t *testing.T) {
 		name     string
 		in       string
 		basePath string
+		known    []string
 		want     string
 	}{
 		{
@@ -211,20 +212,85 @@ func TestRewriteFileLinks(t *testing.T) {
 			want: `<a href="?q=foo.">x</a>`,
 		},
 		{
-			name: "ID anchor maps to note id",
-			in:   `<a href="foo.html#ID-12345">x</a>`,
-			want: `<a href="/note/12345">x</a>`,
+			name:  "ID-prefixed numeric, known",
+			in:    `<a href="foo.html#ID-20260514125132">x</a>`,
+			known: []string{"20260514125132"},
+			want:  `<a href="/note/20260514125132">x</a>`,
 		},
 		{
-			name: "ID anchor in subdir path (regression)",
-			in:   `<a href="reference/the_unreasonable_effectiveness_of_html.html#ID-20260514T125132.987905">x</a>`,
-			want: `<a href="/note/20260514T125132.987905">x</a>`,
+			name:  "bare numeric, known",
+			in:    `<a href="foo.html#20260514125132">x</a>`,
+			known: []string{"20260514125132"},
+			want:  `<a href="/note/20260514125132">x</a>`,
 		},
 		{
-			name:     "ID anchor with basePath",
-			in:       `<a href="foo.html#ID-abc">x</a>`,
+			name:  "ID-prefixed TS in subdir, known (regression)",
+			in:    `<a href="reference/the_unreasonable_effectiveness_of_html.html#ID-20260514T125132.987905">x</a>`,
+			known: []string{"20260514T125132.987905"},
+			want:  `<a href="/note/20260514T125132.987905">x</a>`,
+		},
+		{
+			name:  "bare TS, known",
+			in:    `<a href="foo.html#20260514T125132.987905">x</a>`,
+			known: []string{"20260514T125132.987905"},
+			want:  `<a href="/note/20260514T125132.987905">x</a>`,
+		},
+		{
+			name:  "ID-prefixed UUID, known",
+			in:    `<a href="foo.html#ID-f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
+			known: []string{"f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+			want:  `<a href="/note/f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
+		},
+		{
+			name:  "bare UUID, known",
+			in:    `<a href="foo.html#f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
+			known: []string{"f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+			want:  `<a href="/note/f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
+		},
+		{
+			name: "ID-shaped numeric but UNKNOWN falls back",
+			in:   `<a href="foo.html#ID-20260514125132">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "ID-shaped TS but UNKNOWN falls back",
+			in:   `<a href="foo.html#20260514T125132.987905">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "ID-shaped UUID but UNKNOWN falls back",
+			in:   `<a href="foo.html#f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "non-ID-shaped ID-prefix anchor falls back",
+			in:   `<a href="foo.html#ID-not-an-id">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name: "wrong-length numeric anchor falls back",
+			in:   `<a href="foo.html#1234">x</a>`,
+			want: `<a href="?q=foo.">x</a>`,
+		},
+		{
+			name:  "arbitrary string id, known",
+			in:    `<a href="foo.html#ID-my-custom-id">x</a>`,
+			known: []string{"my-custom-id"},
+			want:  `<a href="/note/my-custom-id">x</a>`,
+		},
+		{
+			name:     "known TS anchor with basePath",
+			in:       `<a href="foo.html#20260514T125132.987905">x</a>`,
 			basePath: "/notes",
-			want:     `<a href="/notes/note/abc">x</a>`,
+			known:    []string{"20260514T125132.987905"},
+			want:     `<a href="/notes/note/20260514T125132.987905">x</a>`,
+		},
+		{
+			name:     "known UUID anchor with basePath",
+			in:       `<a href="foo.html#ID-f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
+			basePath: "/notes",
+			known:    []string{"f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+			want:     `<a href="/notes/note/f47ac10b-58cc-4372-a567-0e02b2c3d479">x</a>`,
 		},
 		{
 			name:     "bare link with basePath",
@@ -248,9 +314,10 @@ func TestRewriteFileLinks(t *testing.T) {
 			want: `<a href="foo.pdf">x</a>`,
 		},
 		{
-			name: "multiple links one pass",
-			in:   `<a href="a.html">a</a> <a href="b.md#ID-XYZ">b</a>`,
-			want: `<a href="?q=a.">a</a> <a href="/note/XYZ">b</a>`,
+			name:  "multiple links one pass",
+			in:    `<a href="a.html">a</a> <a href="b.md#ID-20260514125132">b</a>`,
+			known: []string{"20260514125132"},
+			want:  `<a href="?q=a.">a</a> <a href="/note/20260514125132">b</a>`,
 		},
 		{
 			name: "filename with special chars url-escaped",
@@ -260,11 +327,116 @@ func TestRewriteFileLinks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rewriteFileLinks(tc.in, tc.basePath)
+			set := make(map[string]struct{}, len(tc.known))
+			for _, k := range tc.known {
+				set[k] = struct{}{}
+			}
+			isKnown := func(id string) bool { _, ok := set[id]; return ok }
+			got := rewriteFileLinks(tc.in, tc.basePath, isKnown)
 			if got != tc.want {
 				t.Errorf("rewriteFileLinks(%q, %q) =\n  got:  %q\n  want: %q", tc.in, tc.basePath, got, tc.want)
 			}
 		})
+	}
+
+	t.Run("nil predicate -> all anchors fall back", func(t *testing.T) {
+		got := rewriteFileLinks(`<a href="foo.html#ID-20260514125132">x</a>`, "", nil)
+		want := `<a href="?q=foo.">x</a>`
+		if got != want {
+			t.Errorf("got %q want %q", got, want)
+		}
+	})
+}
+
+func TestIDToTimestamp(t *testing.T) {
+	cases := []struct {
+		name   string
+		id     string
+		wantTS string
+		wantOK bool
+	}{
+		{"numeric", "20260514125132", "2026-05-14 12:51:32", true},
+		{"ts with fraction", "20260514T125132.987905", "2026-05-14 12:51:32", true},
+		{"ts no fraction", "20260514T125132", "2026-05-14 12:51:32", true},
+		{"uuid not recoverable", "f47ac10b-58cc-4372-a567-0e02b2c3d479", "", false},
+		{"empty", "", "", false},
+		{"short numeric", "12345", "", false},
+		{"non-digit", "20260514T12513x", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTS, gotOK := idToTimestamp(tc.id)
+			if gotOK != tc.wantOK || gotTS != tc.wantTS {
+				t.Errorf("idToTimestamp(%q) = (%q,%v), want (%q,%v)", tc.id, gotTS, gotOK, tc.wantTS, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestParseHeaderLine(t *testing.T) {
+	cases := []struct {
+		in     string
+		wantTS string
+		wantID string
+	}{
+		{"2026-05-14 12:51:32", "2026-05-14 12:51:32", ""},
+		{"2026-05-14 12:51:32 20260514125132", "2026-05-14 12:51:32", "20260514125132"},
+		{"2026-05-14 12:51:32  20260514T125132.987654", "2026-05-14 12:51:32", "20260514T125132.987654"},
+		{"2026-05-14 12:51:32     f47ac10b-58cc-4372-a567-0e02b2c3d479", "2026-05-14 12:51:32", "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+		{"  2026-05-14 12:51:32    20260514T125132.987654  ", "2026-05-14 12:51:32", "20260514T125132.987654"},
+		{"2026-05-14 12:51:32\r", "2026-05-14 12:51:32", ""},
+		// historical tab-separated header still parses
+		{"2026-05-14 12:51:32\t20260514T125132.987654", "2026-05-14 12:51:32", "20260514T125132.987654"},
+	}
+	for _, tc := range cases {
+		ts, id := parseHeaderLine(tc.in)
+		if ts != tc.wantTS || id != tc.wantID {
+			t.Errorf("parseHeaderLine(%q) = (%q,%q), want (%q,%q)", tc.in, ts, id, tc.wantTS, tc.wantID)
+		}
+	}
+}
+
+func TestFormatHeaderLine(t *testing.T) {
+	cases := []struct {
+		ts, id, want string
+	}{
+		// derivable id → timestamp only
+		{"2026-05-14 12:51:32", "20260514125132", "2026-05-14 12:51:32"},
+		{"2026-05-14 12:51:32", "", "2026-05-14 12:51:32"},
+		// non-derivable → space + id appended
+		{"2026-05-14 12:51:32", "20260514T125132.987654", "2026-05-14 12:51:32 20260514T125132.987654"},
+		{"2026-05-14 12:51:32", "f47ac10b-58cc-4372-a567-0e02b2c3d479", "2026-05-14 12:51:32 f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+	}
+	for _, tc := range cases {
+		got := formatHeaderLine(tc.ts, tc.id)
+		if got != tc.want {
+			t.Errorf("formatHeaderLine(%q,%q) = %q, want %q", tc.ts, tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestHeaderRoundTrip(t *testing.T) {
+	cases := []struct {
+		ts, id string
+	}{
+		{"2026-05-14 12:51:32", "20260514125132"},
+		{"2026-05-14 12:51:32", "20260514T125132.987654"},
+		{"2026-05-14 12:51:32", "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+	}
+	for _, tc := range cases {
+		line := formatHeaderLine(tc.ts, tc.id)
+		gotTS, gotID := parseHeaderLine(line)
+		if gotTS != tc.ts {
+			t.Errorf("ts round-trip: got %q want %q (line=%q)", gotTS, tc.ts, line)
+		}
+		// derivable id is omitted on disk, recovered by caller via timestampToID
+		wantID := tc.id
+		if wantID == timestampToID(tc.ts) {
+			wantID = ""
+		}
+		if gotID != wantID {
+			t.Errorf("id round-trip: got %q want %q (line=%q)", gotID, wantID, line)
+		}
 	}
 }
 

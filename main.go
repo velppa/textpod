@@ -76,6 +76,21 @@ type Server struct {
 	mu    sync.Mutex
 }
 
+// knownIDs returns a predicate over the current note id set. Optional
+// extra ids are added to the snapshot (handy when the caller is about
+// to insert a note whose id should be self-resolvable).
+// Must be called with s.mu held.
+func (s *Server) knownIDs(extra ...string) func(string) bool {
+	ids := make(map[string]struct{}, len(s.Notes)+len(extra))
+	for i := range s.Notes {
+		ids[s.Notes[i].ID] = struct{}{}
+	}
+	for _, e := range extra {
+		ids[e] = struct{}{}
+	}
+	return func(s string) bool { _, ok := ids[s]; return ok }
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
@@ -213,26 +228,36 @@ func loadNotes(file, basePath string) []Note {
 	if err != nil {
 		return nil
 	}
-	var notes []Note
+	type raw struct{ timestamp, id, content string }
+	var raws []raw
+	ids := map[string]struct{}{}
 	for block := range strings.SplitSeq(string(data), noteSeparator) {
 		block = strings.TrimSpace(block)
 		if block == "" {
 			continue
 		}
-		var timestamp, content string
+		var timestamp, id, content string
 		if first, rest, ok := strings.Cut(block, "\n"); ok {
-			timestamp = strings.TrimSpace(first)
+			timestamp, id = parseHeaderLine(first)
 			content = strings.TrimSpace(rest)
 		} else {
 			timestamp = time.Now().Format(timestampLayout)
 			content = block
 		}
-		htmlRendered := noteToHTML(content, basePath)
+		if id == "" {
+			id = timestampToID(timestamp)
+		}
+		raws = append(raws, raw{timestamp, id, content})
+		ids[id] = struct{}{}
+	}
+	isKnown := func(s string) bool { _, ok := ids[s]; return ok }
+	notes := make([]Note, 0, len(raws))
+	for _, r := range raws {
 		notes = append(notes, Note{
-			ID:        timestampToID(timestamp),
-			Timestamp: timestamp,
-			Content:   content,
-			HTML:      htmlRendered,
+			ID:        r.id,
+			Timestamp: r.timestamp,
+			Content:   r.content,
+			HTML:      noteToHTML(r.content, basePath, isKnown),
 		})
 	}
 	sort.Slice(notes, func(i, j int) bool { return notes[i].Timestamp < notes[j].Timestamp })
@@ -530,11 +555,12 @@ func (s *Server) updateNoteByID(w http.ResponseWriter, r *http.Request) {
 	processed, toDownload := processPlusLinks(content, s.BasePath)
 
 	s.mu.Lock()
+	isKnown := s.knownIDs(id)
 	created := true
 	for i := range s.Notes {
 		if s.Notes[i].ID == id {
 			s.Notes[i].Content = processed
-			s.Notes[i].HTML = noteToHTML(processed, s.BasePath)
+			s.Notes[i].HTML = noteToHTML(processed, s.BasePath, isKnown)
 			created = false
 			break
 		}
@@ -548,7 +574,7 @@ func (s *Server) updateNoteByID(w http.ResponseWriter, r *http.Request) {
 			ID:        id,
 			Timestamp: ts,
 			Content:   processed,
-			HTML:      noteToHTML(processed, s.BasePath),
+			HTML:      noteToHTML(processed, s.BasePath, isKnown),
 		})
 		sort.Slice(s.Notes, func(i, j int) bool { return s.Notes[i].Timestamp < s.Notes[j].Timestamp })
 	}
@@ -614,14 +640,14 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 
 	timestamp := time.Now().Format(timestampLayout)
 	id := timestampToID(timestamp)
+
+	s.mu.Lock()
 	note := Note{
 		ID:        id,
 		Timestamp: timestamp,
 		Content:   content,
-		HTML:      noteToHTML(content, s.BasePath),
+		HTML:      noteToHTML(content, s.BasePath, s.knownIDs(id)),
 	}
-
-	s.mu.Lock()
 	s.Notes = append(s.Notes, note)
 	sort.Slice(s.Notes, func(i, j int) bool { return s.Notes[i].Timestamp < s.Notes[j].Timestamp })
 	s.mu.Unlock()
@@ -631,7 +657,7 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-	if _, err := fmt.Fprintf(f, "%s\n%s\n\n%s\n\n", timestamp, content, noteSeparator); err != nil {
+	if _, err := fmt.Fprintf(f, "%s\n%s\n\n%s\n\n", formatHeaderLine(timestamp, id), content, noteSeparator); err != nil {
 		f.Close()
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -813,9 +839,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func notesToFile(notes []Note) string {
 	var b strings.Builder
 	for _, n := range notes {
-		fmt.Fprintf(&b, "%s\n%s\n\n%s\n\n", n.Timestamp, n.Content, noteSeparator)
+		fmt.Fprintf(&b, "%s\n%s\n\n%s\n\n", formatHeaderLine(n.Timestamp, n.ID), n.Content, noteSeparator)
 	}
 	return b.String()
+}
+
+// parseHeaderLine splits a note header into (timestamp, id). The on-disk
+// format is `timestamp[ id]` with any amount of whitespace between the
+// fixed-width timestamp and the id. When the id is omitted (timestamp-only
+// header), id is empty and the caller derives it from the timestamp.
+func parseHeaderLine(line string) (string, string) {
+	line = strings.TrimSpace(line)
+	n := len(timestampLayout)
+	if len(line) <= n {
+		return line, ""
+	}
+	return strings.TrimSpace(line[:n]), strings.TrimSpace(line[n:])
+}
+
+func formatHeaderLine(timestamp, id string) string {
+	if id == "" || id == timestampToID(timestamp) {
+		return timestamp
+	}
+	return timestamp + " " + id
 }
 
 var plusLinkRe = regexp.MustCompile(`\+\[([^\]]+)\]\((https?://[^)]+)\)|\+<(https?://[^>]+)>|\+(https?://\S+)`)
@@ -885,11 +931,12 @@ func (s *Server) runDownloads(links [][2]string, noteID string) {
 		}
 		log.Printf("Failed to download webpage: %s", urlStr)
 		s.mu.Lock()
+		isKnown := s.knownIDs()
 		for i := range s.Notes {
 			if s.Notes[i].ID == noteID {
 				old := fmt.Sprintf("([local copy](%s/%s))", s.BasePath, fp)
 				s.Notes[i].Content = strings.ReplaceAll(s.Notes[i].Content, old, "(local copy failed)")
-				s.Notes[i].HTML = noteToHTML(s.Notes[i].Content, s.BasePath)
+				s.Notes[i].HTML = noteToHTML(s.Notes[i].Content, s.BasePath, isKnown)
 				break
 			}
 		}
@@ -994,16 +1041,24 @@ func timestampToID(ts string) string {
 	return b.String()
 }
 
+// idToTimestamp recovers a human-readable timestamp from a temporal id.
+// Recognized id shapes:
+//   - `YYYYMMDDhhmmss`                14 digits, native textpod
+//   - `YYYYMMDDThhmmss[.fraction]`    org-id-method ts
+//
+// Non-temporal ids (UUID and anything else) return false; the caller
+// uses the current time when it needs a timestamp for such an id.
 func idToTimestamp(id string) (string, bool) {
-	if len(id) != 14 {
-		return "", false
+	if noteIDNumRe.MatchString(id) {
+		return fmt.Sprintf("%s-%s-%s %s:%s:%s",
+			id[0:4], id[4:6], id[6:8], id[8:10], id[10:12], id[12:14]), true
 	}
-	for _, c := range id {
-		if c < '0' || c > '9' {
-			return "", false
-		}
+	if noteIDTSRe.MatchString(id) {
+		// `YYYYMMDDThhmmss[.fraction]`
+		return fmt.Sprintf("%s-%s-%s %s:%s:%s",
+			id[0:4], id[4:6], id[6:8], id[9:11], id[11:13], id[13:15]), true
 	}
-	return fmt.Sprintf("%s-%s-%s %s:%s:%s", id[0:4], id[4:6], id[6:8], id[8:10], id[10:12], id[12:14]), true
+	return "", false
 }
 
 var md = goldmark.New(
@@ -1011,7 +1066,7 @@ var md = goldmark.New(
 	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 )
 
-func noteToHTML(content, basePath string) string {
+func noteToHTML(content, basePath string, isKnownID func(string) bool) string {
 	var out string
 	if isHTML(content) {
 		out = content
@@ -1022,7 +1077,7 @@ func noteToHTML(content, basePath string) string {
 		}
 		out = buf.String()
 	}
-	out = rewriteFileLinks(out, basePath)
+	out = rewriteFileLinks(out, basePath, isKnownID)
 	out = rewriteAttachmentLinks(out, basePath)
 	out = addLazyLoadingToImages(out)
 	return processTags(out, basePath)
@@ -1035,16 +1090,27 @@ func isHTML(s string) bool {
 	return strings.HasPrefix(t, "<")
 }
 
-var internalLinkRe = regexp.MustCompile(`href="((?:\.\./)*([^":?#]+)\.(md|html)(#[^"]*)?)"`)
+var (
+	internalLinkRe = regexp.MustCompile(`href="((?:\.\./)*([^":?#]+)\.(md|html)(#[^"]*)?)"`)
+	noteIDNumRe    = regexp.MustCompile(`^\d{14}$`)
+	noteIDTSRe     = regexp.MustCompile(`^\d{8}T\d{6}(?:\.\d+)?$`)
+)
 
-func rewriteFileLinks(htmlStr, basePath string) string {
+// rewriteFileLinks rewrites internal links produced by org/markdown export.
+// When an anchor strips down to a known note id (optionally prefixed with
+// `ID-`), the href becomes `<basePath>/note/<id>`. Otherwise (no anchor,
+// unknown anchor, or non-id-shaped anchor), it falls back to the filename
+// search `<basePath>?q=<filename>.`.
+func rewriteFileLinks(htmlStr, basePath string, isKnownID func(string) bool) string {
 	return internalLinkRe.ReplaceAllStringFunc(htmlStr, func(match string) string {
 		sub := internalLinkRe.FindStringSubmatch(match)
 		pathNoExt := sub[2]
 		anchor := sub[4]
-		if strings.HasPrefix(anchor, "#ID-") {
-			id := anchor[len("#ID-"):]
-			return fmt.Sprintf(`href="%s/note/%s"`, basePath, id)
+		if anchor != "" && isKnownID != nil {
+			id := strings.TrimPrefix(anchor[1:], "ID-")
+			if isKnownID(id) {
+				return fmt.Sprintf(`href="%s/note/%s"`, basePath, id)
+			}
 		}
 		filename := pathNoExt
 		if i := strings.LastIndex(filename, "/"); i >= 0 {
