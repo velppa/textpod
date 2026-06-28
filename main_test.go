@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -450,4 +453,211 @@ func TestProcessTagsSpanFormat(t *testing.T) {
 			t.Errorf("expected %q in result, got %q", w, got)
 		}
 	}
+}
+
+func TestFilterNotes(t *testing.T) {
+	notes := []Note{
+		{ID: "1", Timestamp: "2026-05-14 10:00:00", Content: "Hello World"},
+		{ID: "2", Timestamp: "2026-06-01 09:30:00", Content: "Go programming"},
+		{ID: "3", Timestamp: "2026-06-01 11:00:00", Content: "another GO note"},
+	}
+	cases := []struct {
+		name string
+		q    string
+		want []string
+	}{
+		{"empty returns all", "", []string{"1", "2", "3"}},
+		{"case-insensitive content", "go", []string{"2", "3"}},
+		{"timestamp substring", "2026-06-01", []string{"2", "3"}},
+		{"no match", "zzz", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterNotes(notes, tc.q)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len=%d want %d (%v)", len(got), len(tc.want), got)
+			}
+			for i, id := range tc.want {
+				if got[i].ID != id {
+					t.Errorf("pos %d: got id %q want %q", i, got[i].ID, id)
+				}
+			}
+		})
+	}
+}
+
+func TestPaginateNotes(t *testing.T) {
+	mk := func(n int) []Note {
+		out := make([]Note, n)
+		for i := range out {
+			out[i] = Note{ID: fmt.Sprintf("%d", i)}
+		}
+		return out
+	}
+	cases := []struct {
+		name      string
+		total     int
+		page      int
+		size      int
+		wantLen   int
+		wantPage  int
+		wantPages int
+		wantFirst string
+	}{
+		{"first page", 25, 1, 10, 10, 1, 3, "0"},
+		{"second page", 25, 2, 10, 10, 2, 3, "10"},
+		{"last partial page", 25, 3, 10, 5, 3, 3, "20"},
+		{"page below 1 clamps", 25, 0, 10, 10, 1, 3, "0"},
+		{"page over max clamps", 25, 99, 10, 5, 3, 3, "20"},
+		{"empty input", 0, 1, 10, 0, 1, 1, ""},
+		{"exact multiple", 20, 2, 10, 10, 2, 2, "10"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, page, pages := paginateNotes(mk(tc.total), tc.page, tc.size)
+			if len(got) != tc.wantLen {
+				t.Errorf("len=%d want %d", len(got), tc.wantLen)
+			}
+			if page != tc.wantPage {
+				t.Errorf("page=%d want %d", page, tc.wantPage)
+			}
+			if pages != tc.wantPages {
+				t.Errorf("pages=%d want %d", pages, tc.wantPages)
+			}
+			if tc.wantFirst != "" {
+				if len(got) == 0 || got[0].ID != tc.wantFirst {
+					t.Errorf("first id mismatch, got %v want %q", got, tc.wantFirst)
+				}
+			}
+		})
+	}
+}
+
+func TestParsePage(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 1}, {"1", 1}, {"3", 3}, {"0", 1}, {"-2", 1}, {"abc", 1}, {" 4 ", 4},
+	}
+	for _, tc := range cases {
+		if got := parsePage(tc.in); got != tc.want {
+			t.Errorf("parsePage(%q)=%d want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSearchBoxHTML(t *testing.T) {
+	got := searchBoxHTML("/notes", `a "b"`)
+	for _, w := range []string{
+		`action="/notes/"`,
+		`name="q"`,
+		`value="a &#34;b&#34;"`,
+		`type="search"`,
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("expected %q in %q", w, got)
+		}
+	}
+}
+
+func TestPagerHTML(t *testing.T) {
+	t.Run("single page hidden", func(t *testing.T) {
+		if got := pagerHTML("", "", 1, 1); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("middle page both links", func(t *testing.T) {
+		got := pagerHTML("", "go", 2, 3)
+		for _, w := range []string{
+			`Newer posts`, `Older posts`,
+			`href="/?page=1&q=go"`, `href="/?page=3&q=go"`,
+			`Page 2 of 3`,
+		} {
+			if !strings.Contains(got, w) {
+				t.Errorf("expected %q in %q", w, got)
+			}
+		}
+	})
+	t.Run("first page no newer link", func(t *testing.T) {
+		got := pagerHTML("", "", 1, 3)
+		if strings.Contains(got, "Newer posts") {
+			t.Errorf("did not expect Newer link on page 1: %q", got)
+		}
+		if !strings.Contains(got, "Older posts") {
+			t.Errorf("expected Older link: %q", got)
+		}
+	})
+}
+
+func newTestServer(notes []Note) *Server {
+	return &Server{
+		Config: Config{},
+		HTML:   indexHTML,
+		Notes:  notes,
+	}
+}
+
+func TestIndexPaginationAndSearch(t *testing.T) {
+	notes := make([]Note, 25)
+	for i := range notes {
+		id := fmt.Sprintf("%02d", i)
+		notes[i] = Note{
+			ID:        id,
+			Timestamp: fmt.Sprintf("2026-05-%02d 10:00:00", i+1),
+			Content:   "note " + id,
+			HTML:      "<p>note " + id + "</p>",
+		}
+	}
+	s := newTestServer(notes)
+
+	get := func(target string) string {
+		req := httptest.NewRequest("GET", target, nil)
+		rec := httptest.NewRecorder()
+		s.index(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("GET %s: status %d", target, rec.Code)
+		}
+		body, _ := io.ReadAll(rec.Result().Body)
+		return string(body)
+	}
+
+	t.Run("page 1 shows newest 10", func(t *testing.T) {
+		body := get("/")
+		if !strings.Contains(body, "/note/24") || !strings.Contains(body, "/note/15") {
+			t.Errorf("page 1 should contain notes 24..15")
+		}
+		if strings.Contains(body, "/note/14") {
+			t.Errorf("page 1 should not contain note 14")
+		}
+		if !strings.Contains(body, "Older posts") {
+			t.Errorf("expected pager with Older posts")
+		}
+		if strings.Contains(body, "<textarea") {
+			t.Errorf("index must not contain a textarea")
+		}
+	})
+
+	t.Run("page 2 shows next slice", func(t *testing.T) {
+		body := get("/?page=2")
+		if !strings.Contains(body, "/note/14") || !strings.Contains(body, "/note/05") {
+			t.Errorf("page 2 should contain notes 14..05")
+		}
+		if !strings.Contains(body, "Newer posts") {
+			t.Errorf("page 2 should have Newer posts link")
+		}
+	})
+
+	t.Run("search filters", func(t *testing.T) {
+		body := get("/?q=note+07")
+		if !strings.Contains(body, "/note/07") {
+			t.Errorf("search should match note 07")
+		}
+		if strings.Contains(body, "/note/08") {
+			t.Errorf("search should not match note 08")
+		}
+		if !strings.Contains(body, `value="note 07"`) {
+			t.Errorf("search box should echo query")
+		}
+	})
 }

@@ -124,6 +124,7 @@ uses the current top-level heading."
          (org-text (textpod--process-details org-text))
          (out (let ((org-export-with-toc nil)
                     (org-export-with-todo-keywords nil)
+                    (org-html-htmlize-output-type nil)
                     (org-md-headline-style 'atx))
                 (org-export-string-as org-text 'textpod-tufte-html t)))
          (out (textpod--wrap-details out))

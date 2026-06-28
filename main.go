@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"embed"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,11 +42,8 @@ var faviconSVG []byte
 //go:embed shared.css
 var sharedCSS string
 
-//go:embed tufte.css
-var tufteCSS string
-
-//go:embed et-book
-var etBookFS embed.FS
+//go:embed blog.css
+var blogCSS string
 
 const noteSeparator = "\u000C"
 const contentLengthLimit = 500 * 1024 * 1024
@@ -131,10 +129,6 @@ func main() {
 	htmlStr := strings.ReplaceAll(indexHTML, "{{FAVICON}}", "data:image/svg+xml;base64,"+favicon)
 	htmlStr = strings.ReplaceAll(htmlStr, "{{BASE_PATH}}", cfg.BasePath)
 
-	// tufte.css contains @font-face url("{{BASE_PATH}}/et-book/...") refs
-	// so font URLs resolve under the base-path-mounted route.
-	tufteCSS = strings.ReplaceAll(tufteCSS, "{{BASE_PATH}}", cfg.BasePath)
-
 	server := &Server{
 		Config: cfg,
 		HTML:   htmlStr,
@@ -156,8 +150,6 @@ func main() {
 	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
 	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
 	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
-	mux.Handle("GET /et-book/", http.FileServerFS(etBookFS))
-
 	var handler http.Handler = mux
 	if cfg.BasePath != "" {
 		root := http.NewServeMux()
@@ -281,18 +273,34 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	readonly := false
-	if s.HasToken {
-		readonly = !hasValidToken(r, s.Token)
+	search := strings.TrimSpace(q.Get("q"))
+	page := parsePage(q.Get("page"))
+
+	s.mu.Lock()
+	notes := make([]Note, 0, len(s.Notes))
+	for i := len(s.Notes) - 1; i >= 0; i-- {
+		notes = append(notes, s.Notes[i])
+	}
+	s.mu.Unlock()
+
+	notes = filterNotes(notes, search)
+	pageNotes, page, pages := paginateNotes(notes, page, pageSize)
+
+	var b strings.Builder
+	for _, n := range pageNotes {
+		body := wrapH3InDetails(n.HTML)
+		link := fmt.Sprintf(`<a href="%s/note/%s"><time datetime="%s">%s</time></a>`,
+			s.BasePath, n.ID, n.Timestamp, formatTimestampWithDay(n.Timestamp))
+		b.WriteString(`<section class="note">`)
+		b.WriteString(injectSubtitle(body, link))
+		b.WriteString("</section>\n")
 	}
 
-	out := strings.ReplaceAll(s.HTML, "{{TUFTE_CSS}}", tufteCSS)
+	out := strings.ReplaceAll(s.HTML, "{{BLOG_CSS}}", blogCSS)
 	out = strings.ReplaceAll(out, "{{SHARED_CSS}}", sharedCSS)
-	if readonly {
-		out = strings.ReplaceAll(out, "{{READONLY}}", "true")
-	} else {
-		out = strings.ReplaceAll(out, "{{READONLY}}", "false")
-	}
+	out = strings.ReplaceAll(out, "{{SEARCH_BOX}}", searchBoxHTML(s.BasePath, search))
+	out = strings.ReplaceAll(out, "{{NOTES}}", b.String())
+	out = strings.ReplaceAll(out, "{{PAGER}}", pagerHTML(s.BasePath, search, page, pages))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, out)
 }
@@ -370,58 +378,23 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title := html.EscapeString(noteTitle(note))
-	readonly := s.HasToken && !hasValidToken(r, s.Token)
-	contentJSON, _ := json.Marshal(note.Content)
-	idJSON, _ := json.Marshal(note.ID)
-	basePathJSON, _ := json.Marshal(s.BasePath)
 	subtitleInner := fmt.Sprintf(`<time datetime="%s">%s</time> &middot; <a href="%s">back</a>`,
 		note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
-	if !readonly {
-		subtitleInner += ` &middot; <a href="#" id="editLink">edit</a> &middot; <a href="#" id="deleteLink">delete</a>`
-	}
 	noteBody := injectSubtitle(note.HTML, subtitleInner)
 	page := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
-    <title>%s - Textpod</title>
+    <title>%s | Hotter</title>
     <meta name="color-scheme" content="light dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
         %s
         %s
-        #editor {
-            width: 100%%;
-            height: calc(100vh - 6em);
-            font-family: monospace;
-            font-size: inherit;
-            padding: 1em;
-            resize: vertical;
-            box-sizing: border-box;
-        }
-        #editActions {
-            margin-top: 0.75em;
-            text-align: right;
-        }
-        #editActions button {
-            font-family: monospace;
-            padding: 0.4em 1em;
-            background-color: var(--color-secondary);
-            color: var(--color-text-secondary);
-            border: none;
-            cursor: pointer;
-            margin-left: 0.5em;
-        }
     </style>
 </head>
 <body>
     <section id="noteView" class="note">%s</section>
-    <div id="noteEdit" style="display:none">
-        <textarea id="editor"></textarea>
-        <div id="editActions">
-            <button id="cancelButton" type="button">Cancel</button>
-            <button id="submitButton" type="button">Submit</button>
-        </div>
-    </div>
+    <footer>Hotter</footer>
     <script>
         (function() {
             const headings = document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6');
@@ -450,81 +423,10 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
                 box.appendChild(ul);
                 subtitle.parentNode.insertBefore(box, subtitle.nextSibling);
             }
-
-            const NOTE_ID = %s;
-            const BASE_PATH = %s;
-            const CONTENT = %s;
-            const view = document.getElementById('noteView');
-            const edit = document.getElementById('noteEdit');
-            const editor = document.getElementById('editor');
-            const editLink = document.getElementById('editLink');
-            const deleteLink = document.getElementById('deleteLink');
-            const submitButton = document.getElementById('submitButton');
-            const cancelButton = document.getElementById('cancelButton');
-
-            if (editLink) {
-                editor.addEventListener('dragover', (e) => { e.preventDefault(); });
-                editor.addEventListener('drop', async (e) => {
-                    e.preventDefault();
-                    for (const file of e.dataTransfer.files) {
-                        const formData = new FormData();
-                        formData.append('file', file);
-                        const resp = await fetch(BASE_PATH + '/upload', { method: 'POST', body: formData });
-                        if (!resp.ok) continue;
-                        const path = await resp.json();
-                        const filename = path.split('/').pop();
-                        const pos = editor.selectionStart;
-                        const before = editor.value.substring(0, pos);
-                        const after = editor.value.substring(pos);
-                        const needsBrackets = path.includes(' ') || filename.includes(' ');
-                        const formattedPath = needsBrackets ? '<' + path + '>' : path;
-                        editor.value = file.type.startsWith('image/')
-                            ? before + '![' + filename + '](' + formattedPath + ')' + after
-                            : before + '[' + filename + '](' + formattedPath + ')' + after;
-                    }
-                });
-                editLink.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    editor.value = CONTENT;
-                    view.style.display = 'none';
-                    edit.style.display = '';
-                    editor.focus();
-                    editor.setSelectionRange(0, 0);
-                    editor.scrollTop = 0;
-                });
-                cancelButton.addEventListener('click', () => {
-                    edit.style.display = 'none';
-                    view.style.display = '';
-                });
-                submitButton.addEventListener('click', async () => {
-                    const resp = await fetch(BASE_PATH + '/notes/' + NOTE_ID, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(editor.value)
-                    });
-                    if (resp.ok) {
-                        location.reload();
-                    } else {
-                        alert('Failed to save note');
-                    }
-                });
-                deleteLink.addEventListener('click', async (e) => {
-                    e.preventDefault();
-                    if (!confirm('Are you sure you want to delete this note?')) return;
-                    const resp = await fetch(BASE_PATH + '/notes/' + NOTE_ID, { method: 'DELETE' });
-                    if (resp.ok) {
-                        location.href = BASE_PATH || '/';
-                    } else {
-                        alert('Failed to delete note');
-                    }
-                });
-            }
         })();
     </script>
 </body>
-</html>`,
-		title, tufteCSS, sharedCSS, noteBody,
-		idJSON, basePathJSON, contentJSON)
+</html>`, title, blogCSS, sharedCSS, noteBody)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, page)
 }
@@ -829,6 +731,89 @@ func (s *Server) headAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 // -- utils --
+
+func filterNotes(notes []Note, q string) []Note {
+	if q == "" {
+		return notes
+	}
+	ql := strings.ToLower(q)
+	out := make([]Note, 0, len(notes))
+	for _, n := range notes {
+		if strings.Contains(strings.ToLower(n.Content), ql) || strings.Contains(n.Timestamp, q) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+const pageSize = 10
+
+// paginateNotes returns the slice of notes for the given 1-based page,
+// the clamped page number, and the total number of pages (>=1).
+func paginateNotes(notes []Note, page, size int) ([]Note, int, int) {
+	pages := (len(notes) + size - 1) / size
+	if pages < 1 {
+		pages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > pages {
+		page = pages
+	}
+	start := (page - 1) * size
+	if start > len(notes) {
+		start = len(notes)
+	}
+	end := start + size
+	if end > len(notes) {
+		end = len(notes)
+	}
+	return notes[start:end], page, pages
+}
+
+func parsePage(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+func searchBoxHTML(basePath, q string) string {
+	return fmt.Sprintf(`<form class="search" method="get" action="%s/">`+
+		`<input type="search" name="q" value="%s" placeholder="Search…"></form>`,
+		basePath, html.EscapeString(q))
+}
+
+func pagerHTML(basePath, q string, page, pages int) string {
+	if pages <= 1 {
+		return ""
+	}
+	link := func(p int) string {
+		v := url.Values{}
+		if q != "" {
+			v.Set("q", q)
+		}
+		v.Set("page", strconv.Itoa(p))
+		return basePath + "/?" + v.Encode()
+	}
+	var b strings.Builder
+	b.WriteString(`<nav class="pager">`)
+	if page > 1 {
+		fmt.Fprintf(&b, `<a class="newer" href="%s">&larr; Newer posts</a>`, link(page-1))
+	} else {
+		b.WriteString(`<span class="newer"></span>`)
+	}
+	fmt.Fprintf(&b, `<span class="page-of">Page %d of %d</span>`, page, pages)
+	if page < pages {
+		fmt.Fprintf(&b, `<a class="older" href="%s">Older posts &rarr;</a>`, link(page+1))
+	} else {
+		b.WriteString(`<span class="older"></span>`)
+	}
+	b.WriteString(`</nav>`)
+	return b.String()
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

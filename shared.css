@@ -1,12 +1,13 @@
-/* Textpod overlay — applied AFTER tufte.css.
- * tufte.css supplies typography, body width, sidenote layout, color
- * palette, blockquote/epigraph, table base, code base.
- * This file adds Textpod-only features: tag chips, TOC sidebar,
- * external-link arrow, note metadata, dense table tweaks, and
+/* Textpod overlay — applied AFTER blog.css.
+ * blog.css supplies base typography, body width, color, link, blockquote,
+ * code, and image styling.
+ * This file adds Textpod-only features: tag chips, note metadata, dense
+ * table tweaks, definition lists, the per-note ToC marginnote, and
  * details/summary collapse styling.
  *
- * Color tokens are derived from tufte.css's palette so dark mode
- * keeps working. Do NOT redefine body width/font/color here. */
+ * The --color-* tokens defined here are the single source of truth for
+ * the palette; blog.css consumes them. Do NOT redefine body width/font
+ * here. */
 
 :root {
     --color-secondary: #666;
@@ -46,13 +47,6 @@ section.note {
 section.note:not(:last-child) {
     border-bottom: 1px solid var(--color-bg-secondary);
     padding-bottom: 2em;
-}
-
-/* External link arrow — Textpod-only affordance for outbound links. */
-section.note p > a[href^="http"]::after,
-section.note li > a[href^="http"]::after {
-    content: " \2197";
-    font-size: 0.7em;
 }
 
 /* Headings: Textpod uses a flex layout to push tag chips to the
@@ -251,93 +245,6 @@ section.note p.subtitle a::after {
     content: none !important;
 }
 
-/* Index-page ToC: a fixed left-side sidebar listing all rendered
- * note headings, with its own filter input.  Only the index page
- * uses `#toc` (per-note pages render ToC as a marginnote). */
-#toc {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 16%;
-    height: 100vh;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 0.75em 1em;
-    box-sizing: border-box;
-    background-color: var(--color-bg-secondary);
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
-    font-size: 0.6rem;
-    line-height: 1.3;
-    z-index: 10;
-}
-
-#toc,
-#toc * {
-    font-size: 0.8rem !important;
-    line-height: 1.3 !important;
-    font-weight: normal !important;
-    font-style: normal !important;
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif !important;
-}
-
-#toc:empty {
-    display: none;
-}
-
-#toc input.toc-search {
-    width: 100%;
-    box-sizing: border-box;
-    font-family: inherit;
-    font-size: inherit;
-    padding: 0.25em 0.5em;
-    margin-bottom: 0.5em;
-    border: 1px solid var(--color-secondary);
-    background-color: var(--color-text-secondary);
-    color: var(--color-text);
-}
-
-#toc ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    width: auto;
-}
-
-#toc li {
-    padding: 0.1em 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-}
-
-#toc a {
-    display: inline-block;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    vertical-align: bottom;
-    text-decoration: none;
-    color: var(--color-text);
-    background: none;
-    text-shadow: none;
-}
-
-#toc a:hover {
-    text-decoration: underline;
-}
-
-#toc a::after {
-    content: none !important;
-}
-
-@media (max-width: 1100px) {
-    #toc {
-        display: none;
-    }
-}
-
 /* JS-built per-note ToC.  Sits below the subtitle, floated to the
  * right so body text wraps to its left.  Distinct background +
  * accent border visually separates it from the article. */
@@ -400,10 +307,4 @@ section.note p.subtitle a::after {
 section.note img {
     max-width: 100%;
     height: auto;
-}
-
-@media (max-width: 1100px) {
-    #toc {
-        display: none;
-    }
 }
