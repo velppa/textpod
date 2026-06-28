@@ -23,9 +23,9 @@
 
 (require 'plz)
 (require 'ox-md)
+(require 'ox-html)
 (require 'rx)
 (require 'org)
-(require 'textpod-org-tufte)
 
 ;;;; Customization
 
@@ -126,7 +126,7 @@ uses the current top-level heading."
                     (org-export-with-todo-keywords nil)
                     (org-html-htmlize-output-type nil)
                     (org-md-headline-style 'atx))
-                (org-export-string-as org-text 'textpod-tufte-html t)))
+                (org-export-string-as org-text 'textpod-html t)))
          (out (textpod--wrap-details out))
          (out (textpod--add-image-dimensions out default-directory))
          (out (textpod--upload-local-links out default-directory))
@@ -326,6 +326,183 @@ link syntax (![...](...), [...](...)). Returns the modified string."
                  (format "[%s](%s)" label url)))
            match)))
      html)))
+
+;;;; Org export backend
+
+;; An Org HTML backend that produces body-only HTML fragments
+;; (sidenotes, margin notes, epigraph quotes, captioned src blocks)
+;; suitable for embedding into Textpod notes.  It never emits a full
+;; document template, never wraps sections in <section>, and adds no
+;; attribution footer.
+
+(defconst textpod--no-footnotes-section ""
+  "Footnotes-section template that emits no output.
+Footnotes are rendered inline as sidenotes, so the trailing
+footnotes block produced by `ox-html' is suppressed entirely.
+An empty string is used (rather than an HTML comment) because the
+exported HTML is then re-rendered by goldmark, which can split
+comments at blank lines and leak the closing `-->' as text.")
+
+(org-export-define-derived-backend 'textpod-html 'html
+  :options-alist
+  `((:html-footnotes-section nil nil ,textpod--no-footnotes-section)
+    ;; Top-level Org headline (`* Foo') maps to <h1> instead of the
+    ;; ox-html default <h2>.  Notes are body fragments embedded into
+    ;; a host page; there is no document title to reserve <h1> for.
+    (:html-toplevel-hlevel nil "H" 1))
+  :translate-alist
+  '((footnote-reference . textpod--footnote-reference)
+    (headline           . textpod--headline)
+    (link               . textpod--link)
+    (quote-block        . textpod--quote-block)
+    (src-block          . textpod--src-block)))
+
+(defun textpod--tags-span-to-colons (html)
+  "Rewrite ox-html's `<span class=\"tag\">…</span>' block in HTML to
+`:tag1:tag2:' colon form.
+
+ox-html renders Org headline tags as nested spans:
+  <span class=\"tag\"><span class=\"t1\">t1</span>&#xa0;<span …>t2</span></span>
+The Textpod server's tag handler scans heading inner text for the
+`:Tag:' colon syntax, so we convert the span back to that form
+(prefixed with a single space) and let the server style it.
+Returns HTML unchanged if it isn't a string."
+  (if (not (stringp html))
+      html
+    (replace-regexp-in-string
+     "\\(?:&#xa0;\\|[ \t\n]\\)*<span class=\"tag\">\\(?:<span class=\"[^\"]+\">[^<]+</span>\\(?:&#xa0;\\)?\\)+</span>"
+     (lambda (match)
+       ;; The inner-tag regex requires `[^<]+' between the open/close
+       ;; spans, so the outer `<span class="tag">' wrapper (which
+       ;; contains nested `<') is skipped automatically — only the
+       ;; per-tag inner spans are captured.
+       ;; `save-match-data' is required: the inner `string-match'
+       ;; would otherwise clobber the outer replace's match data,
+       ;; causing only a tail slice of the span to be substituted.
+       (save-match-data
+         (let ((tags '())
+               (start 0))
+           (while (string-match "<span class=\"[^\"]+\">\\([^<]+\\)</span>"
+                                match start)
+             (push (match-string 1 match) tags)
+             (setq start (match-end 0)))
+           (if tags
+               (concat " :" (mapconcat #'identity (nreverse tags) ":") ":")
+             ""))))
+     html t t)))
+
+(defun textpod--headline (headline contents info)
+  "Render headlines with <article>/<section> wrappers instead of
+the default <div class=\"outline-N\"> / <div class=\"outline-text-N\">.
+
+The page's CSS width rules target `section > p' / `section > table'
+etc.; only direct children of <section> get the narrow-column layout.
+The default ox-html wrappers are <div>s, so those rules never
+fire.  We swap:
+
+  <div ... class=\"outline-1\">          → <article>   (top-level only)
+  <div ... class=\"outline-N>1\">        → <section>
+  <div ... class=\"outline-text-N\">     → <section>
+
+leaving headline tags and child subtree blocks untouched.  Only
+the outermost top-level headline becomes an <article>; nested
+subheadings become <section>s so each h2 isn't wrapped in its own
+<article>.
+
+Falls back to `org-html-headline' for list-style headlines, where
+the output isn't a wrapper-div pair and rewriting would corrupt
+structure."
+  (let ((html (textpod--tags-span-to-colons
+               (org-html-headline headline contents info)))
+        (level (org-export-get-relative-level headline info)))
+    (if (and (stringp html)
+             (string-match
+              "\\`<div id=\"outline-container-[^\"]+\" class=\"outline-[0-9]+\"[^>]*>"
+              html))
+        (let* ((body-start (match-end 0))
+               (trimmed (string-trim-right html))
+               (close "</div>"))
+          (if (string-suffix-p close trimmed)
+              (let ((inner (substring trimmed body-start
+                                      (- (length trimmed) (length close)))))
+                (setq inner
+                      (replace-regexp-in-string
+                       "<div class=\"outline-text-[0-9]+\" id=\"text-[^\"]+\">"
+                       "<section>" inner))
+                (setq inner
+                      (replace-regexp-in-string
+                       "</div>" "</section>" inner))
+                (if (= level 1)
+                    (concat "<article>" inner "</article>\n")
+                  (concat "<section>" inner "</section>\n")))
+            html))
+      html)))
+
+(defun textpod--footnote-reference (footnote-reference _contents info)
+  "Render FOOTNOTE-REFERENCE as a sidenote.
+Footnote definitions become inline sidenotes; the host page is
+responsible for hiding/showing them via the .margin-toggle
+checkbox pattern."
+  (let* ((n (org-export-get-footnote-number footnote-reference info))
+         (id (format "sn-%s" n))
+         (def (org-trim
+               (org-export-data
+                (org-export-get-footnote-definition footnote-reference info)
+                info)))
+         (def (replace-regexp-in-string "</?p[^>]*>" "" def)))
+    (format
+     (concat "<label for=\"%s\" class=\"margin-toggle sidenote-number\"></label>"
+             "<input type=\"checkbox\" id=\"%s\" class=\"margin-toggle\"/>"
+             "<span class=\"sidenote\">%s</span>")
+     id id def)))
+
+(defun textpod--link (link desc info)
+  "Render LINK; convert fuzzy `mn:LABEL' links to margin notes.
+Any other link falls through to the standard HTML transcoder."
+  (let ((path (split-string (or (org-element-property :path link) "") ":")))
+    (if (and (string= (org-element-property :type link) "fuzzy")
+             (string= (car path) "mn"))
+        (let ((id (format "mn-%s" (or (cadr path) (random 1000000))))
+              (text (replace-regexp-in-string "</?p[^>]*>" "" (or desc ""))))
+          (format
+           (concat "<label for=\"%s\" class=\"margin-toggle\">&#8853;</label>"
+                   "<input type=\"checkbox\" id=\"%s\" class=\"margin-toggle\"/>"
+                   "<span class=\"marginnote\">%s</span>")
+           id id text))
+      (org-html-link link desc info))))
+
+(defun textpod--quote-block (quote-block contents _info)
+  "Render QUOTE-BLOCK as an epigraph.
+A `#+NAME:' on the block becomes the footer attribution."
+  (let ((name (org-element-property :name quote-block)))
+    (format "<div class=\"epigraph\"><blockquote>\n%s%s</blockquote></div>"
+            contents
+            (if name (format "<footer>%s</footer>" name) ""))))
+
+(defun textpod--src-block (src-block _contents info)
+  "Render SRC-BLOCK; wrap in <details> when it has a caption."
+  (let ((caption (org-export-get-caption src-block))
+        (code (org-html-format-code src-block info)))
+    (if caption
+        (format "<details><summary>%s</summary><pre class=\"code\"><code>%s</code></pre></details>"
+                (org-trim (org-export-data caption info))
+                code)
+      (format "<pre class=\"code\"><code>%s</code></pre>" code))))
+
+;;;###autoload
+(defun textpod-export-as-string (org-text)
+  "Export ORG-TEXT to an HTML fragment string."
+  (let ((org-export-with-toc nil)
+        (org-export-with-todo-keywords nil)
+        (org-export-with-section-numbers nil))
+    (org-export-string-as org-text 'textpod-html t)))
+
+;;;###autoload
+(defun textpod-export-to-buffer ()
+  "Export current buffer or region to an HTML buffer (body-only)."
+  (interactive)
+  (org-export-to-buffer 'textpod-html "*Textpod Export*"
+    nil nil nil t nil (lambda () (html-mode))))
 
 ;;;; Footer
 
