@@ -1,25 +1,14 @@
 /* Textpod overlay — applied AFTER blog.css.
- * blog.css supplies base typography, body width, color, link, blockquote,
- * code, and image styling.
+ * blog.css supplies the palette tokens (--bg-color, --bg-accent,
+ * --bg-highlight, --color, --highlight, --defocus-opacity), base
+ * typography, body width, link, blockquote, code, and image styling.
  * This file adds Textpod-only features: tag chips, note metadata, dense
  * table tweaks, definition lists, the per-note ToC marginnote, and
  * details/summary collapse styling.
- *
- * The --color-* tokens defined here are the single source of truth for
- * the palette; blog.css consumes them. Do NOT redefine body width/font
- * here. */
+ * Do NOT redefine palette or body width/font here. */
 
-:root {
-    --color-secondary: #666;
-    --color-text-secondary: #fffff8;
-    --color-bg-secondary: #f0eee0;
-    --color-text: #111;
-}
-
-/* Bump the base font above tufte.css's default 15px.  All sizes
- * downstream are in rem and scale automatically. */
 html {
-    font-size: 18px;
+    font-size: 16px;
 }
 
 @media (max-width: 760px) {
@@ -28,30 +17,17 @@ html {
     }
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --color-secondary: #aaa;
-        --color-text-secondary: #151515;
-        --color-bg-secondary: #2a2a2a;
-        --color-text: #ddd;
-    }
-}
-
-/* Notes are rendered as <section> so tufte.css's `section > p`
- * width rules apply automatically; sidenotes float into the right
- * margin without further help. We only add inter-note spacing. */
 section.note {
     margin-bottom: 3em;
 }
 
 section.note:not(:last-child) {
-    border-bottom: 1px solid var(--color-bg-secondary);
+    border-bottom: 1px solid var(--bg-accent);
     padding-bottom: 2em;
 }
 
 /* Headings: Textpod uses a flex layout to push tag chips to the
- * right of the heading text. tufte.css does not style h4-h6, so
- * we cover the whole range. */
+ * right of the heading text. */
 section.note h1,
 section.note h2,
 section.note h3,
@@ -86,17 +62,18 @@ section.note .tags {
 a.tag {
     font-size: 0.75em;
     font-weight: normal;
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
     padding: 0.15em 0.5em;
-    background-color: var(--color-bg-secondary);
+    background-color: var(--bg-highlight);
+    border: 1px solid var(--bg-accent);
     border-radius: 3px;
     text-decoration: none;
-    color: var(--color-secondary);
+    color: var(--color);
+    opacity: var(--defocus-opacity);
     margin-left: 0.25em;
 }
 
 a.tag:hover {
-    text-decoration: underline;
+    opacity: 1;
 }
 
 a.tag::after {
@@ -107,6 +84,7 @@ a.tag::after {
  * text-style links — no chip background, no padding. */
 section.note p.subtitle a.tag {
     background-color: transparent;
+    border: none;
     padding: 0;
     margin: 0;
     border-radius: 0;
@@ -115,47 +93,42 @@ section.note p.subtitle a.tag {
     color: inherit;
 }
 
-/* details/summary — Textpod folds long src blocks and sub-headings.
- * tufte.css ignores them; supply minimal styling. */
+/* details/summary — Textpod folds long src blocks and sub-headings. */
 section.note details > summary {
     cursor: pointer;
     list-style: revert;
-    font-style: italic;
-    font-size: 1.6rem;
+    color: var(--highlight);
+    font-size: 1.2rem;
 }
 
 section.note details {
     margin: 0.75em 0;
 }
 
-/* Dense tables. tufte.css gives tables airy spacing intended for
- * tabular figures; Textpod often pastes wide data tables, so we
- * compress them here. */
+/* Dense tables for wide pasted data. */
 section.note table {
     border-collapse: collapse;
-    font-size: 1rem;
+    font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
     display: block;
     max-width: 100%;
     overflow-x: auto;
     width: auto;
+    background-color: var(--bg-highlight);
 }
 
 section.note table th,
 section.note table td {
     padding: 0.15em 0.6em;
-    border: 1px solid var(--color-bg-secondary);
+    border: 1px solid var(--bg-accent);
     white-space: nowrap;
     vertical-align: top;
 }
 
 section.note table th {
-    background-color: var(--color-bg-secondary);
+    border-bottom: solid 1px var(--bg-accent);
     text-align: left;
     font-weight: 600;
-}
-
-section.note table tr:nth-child(even) td {
-    background-color: var(--color-bg-secondary);
 }
 
 /* Definition lists rendered as `key — value` on one line.  dt sits
@@ -187,34 +160,33 @@ section.note dl dd::after {
     margin-bottom: 0.25em;
 }
 
-/* Inline code chip — tufte.css renders code as plain monospace;
- * a subtle background helps Textpod's casual notes scan. */
+/* Inline code chip. */
 section.note p code,
 section.note li code {
     padding: 0.1em 0.3em;
-    background-color: var(--color-bg-secondary);
+    background-color: var(--bg-highlight);
     border-radius: 2px;
 }
 
-/* Tufte subtitle adopted as note metadata header — sits right
- * after the first heading.  tufte.css's default p.subtitle is
- * 1.8rem italic; for note metadata we want something subtler. */
+/* Note metadata header — sits right after the first heading.
+ * Mirrors knlb.dev's defocused timestamp headers. */
 section.note p.subtitle {
-    font-size: 1.1rem;
+    font-size: 0.85rem;
     font-style: normal;
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
-    color: var(--color-secondary);
-    margin-top: -0.5rem;
+    opacity: var(--defocus-opacity);
+    margin-top: -0.4rem;
     margin-bottom: 1.5rem;
 }
 
 section.note p.subtitle a {
-    color: inherit;
+    color: var(--color);
     text-decoration: none;
+    border-bottom: none;
 }
 
 section.note p.subtitle a:hover {
     text-decoration: underline;
+    background-color: transparent;
 }
 
 section.note p.subtitle a::after {
@@ -223,21 +195,22 @@ section.note p.subtitle a::after {
 
 /* Note action footer (back/edit/delete on the per-note page). */
 .metadata {
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
     font-size: 0.85em;
-    color: var(--color-secondary);
+    opacity: var(--defocus-opacity);
     margin-top: 1em;
 }
 
 .note .noteMetadata a,
 .metadata a {
-    color: var(--color-secondary);
+    color: var(--color);
     text-decoration: none;
+    border-bottom: none;
 }
 
 .note .noteMetadata a:hover,
 .metadata a:hover {
     text-decoration: underline;
+    background-color: transparent;
 }
 
 .note .noteMetadata a::after,
@@ -246,27 +219,25 @@ section.note p.subtitle a::after {
 }
 
 /* JS-built per-note ToC.  Sits below the subtitle, floated to the
- * right so body text wraps to its left.  Distinct background +
- * accent border visually separates it from the article. */
+ * right so body text wraps to its left. */
 .note-toc {
     float: right;
     clear: right;
     width: 30%;
     margin: 0 0 1em 1em;
     padding: 0.5em 0.75em;
-    background-color: var(--color-bg-secondary);
-    border-left: 2px solid var(--color-secondary);
+    background-color: var(--bg-highlight);
+    border-left: 1px solid var(--bg-accent);
     box-sizing: border-box;
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
     font-size: 0.75rem;
     line-height: 1.3;
+    opacity: var(--defocus-opacity);
 }
 
 .note-toc::before {
     content: "ToC";
     display: block;
     font-weight: 600;
-    color: var(--color-secondary);
     margin-bottom: 0.3em;
 }
 
@@ -281,14 +252,16 @@ section.note p.subtitle a::after {
 }
 
 .note-toc a {
-    color: var(--color-text);
+    color: var(--color);
     text-decoration: none;
     text-shadow: none;
     background: none;
+    border-bottom: none;
 }
 
 .note-toc a:hover {
     text-decoration: underline;
+    background-color: transparent;
 }
 
 .note-toc a::after {

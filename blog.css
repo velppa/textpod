@@ -1,51 +1,75 @@
 /* blog.css — base typography + single-column layout for the Textpod
- * blog. Replaces tufte.css. honeypot.net feel: centered narrow column,
- * serif body, blue links, gray metadata, dark-mode aware.
- * Color tokens (--color-*) are defined in shared.css :root. */
+ * blog, styled after knlb.dev: Inter, cream paper background, navy
+ * highlight for headings and links, hairline accent borders,
+ * defocused metadata, dark-mode aware.
+ * Color tokens are defined here in :root; shared.css consumes them. */
+
+:root {
+    --bg-color: #f7f5ed;
+    --bg-accent: #bdbbad;
+    --bg-highlight: #fff;
+    --color: #111111;
+    --highlight: #002b7f;
+    --text-width: 44rem;
+    --space: 2vw;
+    --defocus-opacity: .7;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-color: #1a1a1a;
+        --bg-accent: #404040;
+        --bg-highlight: #000000;
+        --color: #e7e7e7;
+        --highlight: #ffe5c8;
+    }
+}
 
 html {
     -webkit-text-size-adjust: 100%;
 }
 
 body {
-    max-width: 40rem;
+    max-width: var(--text-width);
     margin: 2rem auto;
     padding: 0 1rem;
-    font-family: Charter, "Iowan Old Style", Georgia, Cambria, "Times New Roman", serif;
-    line-height: 1.6;
-    color: var(--color-text);
-    background-color: #fff;
-}
-
-@media (prefers-color-scheme: dark) {
-    body { background-color: #1a1a1a; }
+    font-family: Inter, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    color: var(--color);
+    background-color: var(--bg-color);
 }
 
 h1, h2, h3, h4, h5, h6 {
     line-height: 1.25;
     margin: 1.6rem 0 0.6rem;
-    font-weight: 600;
+    padding-bottom: 0.3rem;
+    font-weight: normal;
+    color: var(--highlight);
+    border-bottom: solid 1px var(--bg-accent);
 }
 
 h1 { font-size: 1.8rem; }
 h2 { font-size: 1.45rem; }
 h3 { font-size: 1.2rem; }
-h4, h5, h6 { font-size: 1.05rem; }
+h4, h5, h6 { font-size: 1rem; text-transform: uppercase; }
 
 p { margin: 0.8rem 0; }
 
-a { color: #1a6fd4; text-decoration: none; }
-a:hover { text-decoration: underline; }
+a {
+    color: var(--highlight);
+    text-decoration: none;
+    border-bottom: solid 1px var(--bg-accent);
+}
 
-@media (prefers-color-scheme: dark) {
-    a { color: #6ab0ff; }
+a:hover {
+    background-color: var(--bg-highlight);
 }
 
 blockquote {
     margin: 1rem 0;
-    padding-left: 1rem;
-    border-left: 3px solid var(--color-bg-secondary);
-    color: var(--color-secondary);
+    padding: 0.5em 1rem;
+    background-color: var(--bg-highlight);
+    overflow: auto;
 }
 
 ul, ol { padding-left: 1.4rem; }
@@ -54,19 +78,20 @@ img { max-width: 100%; height: auto; }
 
 pre {
     overflow-x: auto;
-    padding: 0.75rem 1rem;
-    background-color: var(--color-bg-secondary);
-    border-radius: 4px;
+    padding: 0.5em 1rem;
+    background-color: var(--bg-highlight);
     font-size: 0.9rem;
 }
 
 code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
 }
 
 hr {
+    height: 1px;
     border: none;
-    border-top: 1px solid var(--color-bg-secondary);
+    background-color: var(--bg-accent);
     margin: 2rem 0;
 }
 
@@ -79,14 +104,9 @@ form.search input[type="search"] {
     padding: 0.5em 0.7em;
     font-size: 1rem;
     font-family: inherit;
-    border: 1px solid var(--color-secondary);
-    border-radius: 4px;
-    background-color: #fff;
-    color: var(--color-text);
-}
-
-@media (prefers-color-scheme: dark) {
-    form.search input[type="search"] { background-color: #2a2a2a; }
+    border: 1px solid var(--bg-accent);
+    background-color: var(--bg-highlight);
+    color: var(--color);
 }
 
 /* pager */
@@ -96,17 +116,16 @@ nav.pager {
     align-items: baseline;
     gap: 1rem;
     margin: 2.5rem 0 1rem;
-    font-family: "Gill Sans", "Gill Sans MT", Calibri, sans-serif;
     font-size: 0.9rem;
 }
 
-nav.pager .page-of { color: var(--color-secondary); }
+nav.pager .page-of { opacity: var(--defocus-opacity); }
 
 footer {
     margin-top: 3rem;
     padding-top: 1rem;
-    border-top: 1px solid var(--color-bg-secondary);
+    border-top: 1px solid var(--bg-accent);
     font-size: 0.8rem;
-    color: var(--color-secondary);
+    opacity: var(--defocus-opacity);
     text-align: center;
 }
