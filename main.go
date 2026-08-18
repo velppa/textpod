@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -727,11 +729,15 @@ func (s *Server) headAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := os.Stat(path); err == nil {
-		w.WriteHeader(http.StatusNoContent)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.NotFound(w, r)
 		return
 	}
-	http.NotFound(w, r)
+	// ETag carries the content hash so clients can skip identical uploads.
+	sum := sha256.Sum256(data)
+	w.Header().Set("ETag", fmt.Sprintf("%q", hex.EncodeToString(sum[:])))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // -- utils --

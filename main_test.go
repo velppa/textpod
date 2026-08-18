@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -699,4 +701,42 @@ func TestGetAssetContentType(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHeadAssetETag(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("assets", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("hello asset\n")
+	if err := os.WriteFile("assets/a.txt", content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServer(nil)
+
+	head := func(name string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("HEAD", "/assets/"+name, nil)
+		req.SetPathValue("name", name)
+		rec := httptest.NewRecorder()
+		s.headAsset(rec, req)
+		return rec
+	}
+
+	t.Run("existing asset carries content hash", func(t *testing.T) {
+		rec := head("a.txt")
+		if rec.Code != 204 {
+			t.Fatalf("status %d", rec.Code)
+		}
+		sum := sha256.Sum256(content)
+		want := fmt.Sprintf("%q", hex.EncodeToString(sum[:]))
+		if got := rec.Header().Get("ETag"); got != want {
+			t.Errorf("ETag = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("missing asset is 404", func(t *testing.T) {
+		if rec := head("nope.txt"); rec.Code != 404 {
+			t.Errorf("status %d, want 404", rec.Code)
+		}
+	})
 }

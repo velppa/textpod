@@ -258,20 +258,32 @@ BASE-DIR is used to resolve relative src paths."
   (when textpod-token
     `(("Authorization" . ,(concat "Bearer " textpod-token)))))
 
-(defun textpod--asset-exists-p (name)
-  "Return non-nil if asset NAME already exists on the server."
+(defun textpod--asset-etag (name)
+  "Return the server's content hash for asset NAME, nil when absent.
+The hash is the unquoted ETag of a HEAD request; nil also when the
+server predates ETag support."
   (condition-case nil
       (let ((resp (plz 'head (concat textpod-url "/assets/" name)
                     :headers (textpod--auth-headers)
                     :as 'response)))
-        (= 204 (plz-response-status resp)))
+        (when (= 204 (plz-response-status resp))
+          (let ((etag (alist-get 'etag (plz-response-headers resp))))
+            (and etag (string-trim etag "\"" "\"")))))
     (error nil)))
+
+(defun textpod--file-sha256 (path)
+  "Return the sha256 hex digest of PATH's contents."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally path)
+    (secure-hash 'sha256 (current-buffer))))
 
 (defun textpod--upload-asset (file-path)
   "Upload FILE-PATH to Textpod assets.  Return the remote URL.
-Skips upload if the asset already exists."
+Skips upload when the server already has identical content."
   (let ((name (file-name-nondirectory file-path)))
-    (unless (textpod--asset-exists-p name)
+    (unless (equal (textpod--asset-etag name)
+                   (textpod--file-sha256 file-path))
       (plz 'put (concat textpod-url "/assets/" name)
         :headers (append (textpod--auth-headers)
                          '(("Content-Type" . "application/octet-stream")))

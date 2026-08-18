@@ -185,5 +185,42 @@ they were treated as relative paths and never uploaded)."
                                         name)))))
       (delete-file tmp))))
 
+
+;;;; upload-asset hash comparison
+
+(ert-deftest textpod-test/file-sha256 ()
+  "Digest matches a known sha256."
+  (let ((tmp (make-temp-file "textpod-hash-" nil nil "hello asset\n")))
+    (unwind-protect
+        (should (equal (textpod--file-sha256 tmp)
+                       (secure-hash 'sha256 "hello asset\n")))
+      (delete-file tmp))))
+
+(defun textpod-test--upload-with-etag (etag)
+  "Run `textpod--upload-asset' against a server reporting ETAG.
+Return non-nil when the asset body was uploaded."
+  (let ((tmp (make-temp-file "textpod-hash-" nil nil "hello asset\n"))
+        (uploaded nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'textpod--asset-etag)
+                   (lambda (_name) etag))
+                  ((symbol-function 'plz)
+                   (lambda (&rest _) (setq uploaded t))))
+          (textpod--upload-asset tmp)
+          uploaded)
+      (delete-file tmp))))
+
+(ert-deftest textpod-test/upload-asset-same-hash-skips ()
+  (should-not (textpod-test--upload-with-etag
+               (secure-hash 'sha256 "hello asset\n"))))
+
+(ert-deftest textpod-test/upload-asset-changed-hash-reuploads ()
+  (should (textpod-test--upload-with-etag
+           (secure-hash 'sha256 "old content\n"))))
+
+(ert-deftest textpod-test/upload-asset-absent-uploads ()
+  "Missing asset (or pre-ETag server) uploads."
+  (should (textpod-test--upload-with-etag nil)))
+
 (provide 'textpod-test)
 ;;; textpod-test.el ends here
