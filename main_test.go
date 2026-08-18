@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -660,4 +661,42 @@ func TestIndexPaginationAndSearch(t *testing.T) {
 			t.Errorf("search box should echo query")
 		}
 	})
+}
+
+func TestGetAssetContentType(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("assets", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"code.el":  []byte(";;; code.el --- elisp\n(defun foo () 1)\n"),
+		"pic.jpeg": {0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46},
+		"blob.bin": {0x00, 0x01, 0x02, 0xff, 0xfe, 0x00, 0x00, 0x00},
+	}
+	for name, data := range files {
+		if err := os.WriteFile("assets/"+name, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newTestServer(nil)
+
+	cases := []struct{ name, want string }{
+		{"code.el", "text/plain; charset=utf-8"},
+		{"pic.jpeg", "image/jpeg"},
+		{"blob.bin", "application/octet-stream"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/assets/"+c.name, nil)
+			req.SetPathValue("name", c.name)
+			rec := httptest.NewRecorder()
+			s.getAsset(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("status %d", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != c.want {
+				t.Errorf("Content-Type = %q, want %q", got, c.want)
+			}
+		})
+	}
 }

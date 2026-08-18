@@ -26,6 +26,7 @@
 (require 'ox-html)
 (require 'rx)
 (require 'org)
+(require 'url-util)
 
 ;;;; Customization
 
@@ -278,6 +279,18 @@ Skips upload if the asset already exists."
         :body `(file ,file-path)))
     (concat textpod-url "/assets/" name)))
 
+(defun textpod--local-path (path base-dir)
+  "Return the absolute local file PATH resolved against BASE-DIR.
+Decodes file:// URIs.  Return nil for empty paths and non-file
+schemes (http:, https:, mailto:, ...)."
+  (cond
+   ((string-prefix-p "file://" path)
+    (url-unhex-string (substring path (length "file://"))))
+   ((string-match-p (rx bos (+ (any "a-zA-Z")) ":") path) nil)
+   ((string-empty-p path) nil)
+   ((file-name-absolute-p path) path)
+   (t (expand-file-name path base-dir))))
+
 (defun textpod--upload-local-links (html base-dir)
   "Find local file/image links in HTML, upload them, rewrite to remote URLs.
 BASE-DIR is the directory to resolve relative paths against.
@@ -298,12 +311,9 @@ link syntax (![...](...), [...](...)). Returns the modified string."
            (lambda (match)
              (let* ((path (match-string 1 match))
                     (attr (substring match 0 (string-match-p "=\"" match)))
-                    (abs-path (if (file-name-absolute-p path)
-                                  path
-                                (expand-file-name path base-dir))))
-               (if (and (not (string-match-p (rx bos (or "http:" "https:")) path))
-                        (not (string-empty-p path))
-                        (file-exists-p abs-path))
+                    (abs-path (save-match-data
+                                (textpod--local-path path base-dir))))
+               (if (and abs-path (file-exists-p abs-path))
                    (let ((url (save-match-data (textpod--upload-asset abs-path))))
                      (format "%s=\"%s\"" attr url))
                  match)))
@@ -315,11 +325,9 @@ link syntax (![...](...), [...](...)). Returns the modified string."
        (let* ((label (match-string 1 match))
               (path (match-string 2 match))
               (is-image (string-prefix-p "!" (substring match 0 1)))
-              (abs-path (if (file-name-absolute-p path)
-                            path
-                          (expand-file-name path base-dir))))
-         (if (and (not (string-match-p (rx bos (or "http:" "https:")) path))
-                  (file-exists-p abs-path))
+              (abs-path (save-match-data
+                          (textpod--local-path path base-dir))))
+         (if (and abs-path (file-exists-p abs-path))
              (let ((url (save-match-data (textpod--upload-asset abs-path))))
                (if is-image
                    (format "![%s](%s)" label url)

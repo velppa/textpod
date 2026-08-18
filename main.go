@@ -690,7 +690,8 @@ func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
-	ct := "application/octet-stream"
+	// Sniffed fallback serves text files inline instead of forcing a download.
+	ct := http.DetectContentType(data)
 	switch ext {
 	case "html":
 		ct = "text/html"
