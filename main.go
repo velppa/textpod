@@ -67,13 +67,23 @@ type Config struct {
 	Token     string
 	HasToken  bool
 	BasePath  string
+
+	OIDCIssuer       string
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCClientName   string
+	OIDCLocalURL     string
+	PublicURL        string
 }
 
 type Server struct {
 	Config
-	HTML  string
-	Notes []Note
-	mu    sync.Mutex
+	OIDC *OIDC
+	// APITokens maps each API token to the user it acts as.
+	APITokens map[string]string
+	HTML      string
+	Notes     []Note
+	mu        sync.Mutex
 }
 
 // knownIDs returns a predicate over the current note id set. Optional
@@ -101,6 +111,12 @@ func main() {
 	flag.StringVar(&cfg.NotesFile, "notes-file", "notes.md", "Save notes in FILE")
 	flag.StringVar(&cfg.Token, "token", "", "Require token for write access; without it the UI is read-only")
 	flag.StringVar(&cfg.BasePath, "base-path", "", "Base URL path prefix (e.g., /textpod)")
+	flag.StringVar(&cfg.OIDCIssuer, "oidc-issuer", "", "OIDC issuer URL, enables browser sign-in (e.g. https://auth.example.com/oidc)")
+	flag.StringVar(&cfg.OIDCClientID, "oidc-client-id", "", "OIDC client id")
+	flag.StringVar(&cfg.OIDCClientSecret, "oidc-client-secret", "", "OIDC client secret")
+	flag.StringVar(&cfg.OIDCClientName, "oidc-client-name", "", "Ask home-auth on this host for the credentials registered under NAME")
+	flag.StringVar(&cfg.OIDCLocalURL, "oidc-local-url", "http://127.0.0.1:3001", "home-auth address on this host, used with --oidc-client-name")
+	flag.StringVar(&cfg.PublicURL, "public-url", "", "Public URL of this app, used to build the OIDC redirect URI (e.g. https://example.com/notes)")
 	flag.Parse()
 
 	flag.Visit(func(f *flag.Flag) {
@@ -131,10 +147,50 @@ func main() {
 	htmlStr := strings.ReplaceAll(indexHTML, "{{FAVICON}}", "data:image/svg+xml;base64,"+favicon)
 	htmlStr = strings.ReplaceAll(htmlStr, "{{BASE_PATH}}", cfg.BasePath)
 
+	var provider *OIDC
+	if cfg.OIDCClientSecret == "" {
+		cfg.OIDCClientSecret = os.Getenv("TEXTPOD_OIDC_CLIENT_SECRET")
+	}
+	apiTokens := map[string]string{}
+	if cfg.OIDCClientName != "" {
+		creds, err := fetchLocalCredentials(cfg.OIDCLocalURL, cfg.OIDCClientName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if cfg.OIDCIssuer == "" {
+			cfg.OIDCIssuer = creds.Issuer
+		}
+		if cfg.OIDCClientID == "" {
+			cfg.OIDCClientID = creds.ClientID
+		}
+		if cfg.OIDCClientSecret == "" {
+			cfg.OIDCClientSecret = creds.ClientSecret
+		}
+		apiTokens = creds.tokenUsers()
+		log.Printf("%q credentials and %d API token(s) fetched from %s",
+			cfg.OIDCClientName, len(apiTokens), cfg.OIDCLocalURL)
+	}
+
+	if cfg.OIDCIssuer != "" {
+		if cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "" || cfg.PublicURL == "" {
+			log.Fatal("--oidc-issuer needs --oidc-client-id, --oidc-client-secret and --public-url")
+		}
+		provider = &OIDC{
+			Issuer:       cfg.OIDCIssuer,
+			ClientID:     cfg.OIDCClientID,
+			ClientSecret: cfg.OIDCClientSecret,
+			RedirectURI:  strings.TrimRight(cfg.PublicURL, "/") + "/auth/callback",
+		}
+		log.Printf("OIDC sign-in enabled, issuer %s, redirect %s",
+			provider.Issuer, provider.RedirectURI)
+	}
+
 	server := &Server{
-		Config: cfg,
-		HTML:   htmlStr,
-		Notes:  loadNotes(cfg.NotesFile, cfg.BasePath),
+		Config:    cfg,
+		OIDC:      provider,
+		APITokens: apiTokens,
+		HTML:      htmlStr,
+		Notes:     loadNotes(cfg.NotesFile, cfg.BasePath),
 	}
 
 	// Watch notes file for external changes.
@@ -152,6 +208,11 @@ func main() {
 	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
 	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
 	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
+	if provider != nil {
+		mux.HandleFunc("GET /auth/login", server.authLogin)
+		mux.HandleFunc("GET /auth/callback", server.authCallback)
+		mux.HandleFunc("GET /auth/logout", server.authLogout)
+	}
 	var handler http.Handler = mux
 	if cfg.BasePath != "" {
 		root := http.NewServeMux()
@@ -262,7 +323,7 @@ func loadNotes(file, basePath string) []Note {
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	if provided := q.Get("token"); provided != "" && s.HasToken && provided == s.Token {
+	if provided := q.Get("token"); s.knownToken(provided) {
 		cookiePath := "/"
 		redirect := "/"
 		if s.BasePath != "" {
@@ -303,6 +364,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	out = strings.ReplaceAll(out, "{{SEARCH_BOX}}", searchBoxHTML(s.BasePath, search))
 	out = strings.ReplaceAll(out, "{{NOTES}}", b.String())
 	out = strings.ReplaceAll(out, "{{PAGER}}", pagerHTML(s.BasePath, search, page, pages))
+	out = strings.ReplaceAll(out, "{{AUTH}}", s.authLinkHTML(r))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, out)
 }
@@ -315,30 +377,50 @@ func getCookieValue(r *http.Request, name string) (string, bool) {
 	return c.Value, true
 }
 
-func hasValidToken(r *http.Request, token string) bool {
-	for _, c := range r.Cookies() {
-		if c.Name == "textpod_token" && c.Value == token {
-			return true
-		}
+// knownToken reports whether value is the token given on the command
+// line or one of the API tokens home-auth handed out.
+func (s *Server) knownToken(value string) bool {
+	if value == "" {
+		return false
 	}
-	auth := r.Header.Get("Authorization")
-	if rest, ok := strings.CutPrefix(auth, "Bearer "); ok {
-		if rest == token {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
-	if !s.HasToken {
+	if s.HasToken && value == s.Token {
 		return true
 	}
-	if hasValidToken(r, s.Token) {
+	_, ok := s.APITokens[value]
+	return ok
+}
+
+// hasValidToken looks for a known token in the Authorization header or
+// the token cookie.
+func (s *Server) hasValidToken(r *http.Request) bool {
+	if v, ok := getCookieValue(r, "textpod_token"); ok && s.knownToken(v) {
+		return true
+	}
+	rest, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return ok && s.knownToken(rest)
+}
+
+// requireAuth gates writes.  With no token at all configured
+// everything is open; otherwise the request needs an API token or a
+// signed-in browser session.
+func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	if s.canWrite(r) {
 		return true
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 	return false
+}
+
+// canWrite reports whether the request may change notes.
+func (s *Server) canWrite(r *http.Request) bool {
+	if !s.HasToken && len(s.APITokens) == 0 && s.OIDC == nil {
+		return true
+	}
+	if s.hasValidToken(r) {
+		return true
+	}
+	_, ok := s.sessionUsername(r)
+	return ok
 }
 
 func (s *Server) getNotes(w http.ResponseWriter, r *http.Request) {
@@ -354,7 +436,7 @@ func (s *Server) getNotes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
-	if provided := r.URL.Query().Get("token"); provided != "" && s.HasToken && provided == s.Token {
+	if provided := r.URL.Query().Get("token"); s.knownToken(provided) {
 		cookiePath := "/"
 		if s.BasePath != "" {
 			cookiePath = s.BasePath
@@ -382,7 +464,12 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 	title := html.EscapeString(noteTitle(note))
 	subtitleInner := fmt.Sprintf(`<time datetime="%s">%s</time> &middot; <a href="%s">back</a>`,
 		note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
+	if s.canWrite(r) {
+		subtitleInner += ` &middot; <a href="#" id="deleteLink">delete</a>`
+	}
 	noteBody := injectSubtitle(note.HTML, subtitleInner)
+	idJSON, _ := json.Marshal(note.ID)
+	basePathJSON, _ := json.Marshal(s.BasePath)
 	page := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -399,8 +486,25 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <section id="noteView" class="note">%s</section>
-    <footer>Hotter</footer>
+    <footer>Hotter%s</footer>
     <script>
+        (function() {
+            const deleteLink = document.getElementById('deleteLink');
+            if (deleteLink) {
+                deleteLink.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    if (!confirm('Delete this note?')) return;
+                    const resp = await fetch(%s + '/notes/' + %s, {
+                        method: 'DELETE', credentials: 'same-origin'
+                    });
+                    if (resp.ok) {
+                        location.href = %s || '/';
+                    } else {
+                        alert('Failed to delete note: ' + resp.status);
+                    }
+                });
+            }
+        })();
         (function() {
             const headings = document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6');
             const subtitle = document.querySelector('.note .subtitle');
@@ -431,7 +535,8 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
         })();
     </script>
 </body>
-</html>`, title, blogCSS, sharedCSS, noteBody)
+</html>`, title, blogCSS, sharedCSS, noteBody, s.authLinkHTML(r),
+		basePathJSON, idJSON, basePathJSON)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, page)
 }
@@ -1240,8 +1345,8 @@ var (
 	tagRe        = regexp.MustCompile(`(^|\s)(:[A-Za-z0-9_@#]+(?::[A-Za-z0-9_@#]+)*:)([^A-Za-z0-9_@#]|$)`)
 	headingTagRe = regexp.MustCompile(`(?s)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
 	// spanTagRe matches ox-html tag spans: <span class="tag"><span class="Blog">Blog</span></span>
-	spanTagRe    = regexp.MustCompile(`(?:&#xa0;|\s)*<span class="tag">(.+?)</span>\s*$`)
-	innerSpanRe  = regexp.MustCompile(`<span class="[^"]+">([^<]+)</span>`)
+	spanTagRe   = regexp.MustCompile(`(?:&#xa0;|\s)*<span class="tag">(.+?)</span>\s*$`)
+	innerSpanRe = regexp.MustCompile(`<span class="[^"]+">([^<]+)</span>`)
 )
 
 func processTags(htmlStr, basePath string) string {

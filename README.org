@@ -14,6 +14,7 @@ idea.
 - Start a link with =+= and Textpod will save a local single-page copy (via [[https://github.com/Y2Z/monolith][monolith]])
 - File and image attachments
 - Optional =--token= flag for read-only public access with authenticated writes
+- Optional OIDC sign-in ([[https://github.com/velppa/home-auth][home-auth]]) for browser writes
 - =--base-path= for serving behind a reverse proxy under a sub-path
 - Auto-reload when =notes.md= is changed externally
 - =:tag:= syntax turned into clickable filter links
@@ -44,8 +45,44 @@ Flags:
 - =--port= – port number (default =3000=)
 - =--listen= – listen address (default =127.0.0.1=)
 - =--notes-file= – notes file (default =notes.md=)
-- =--token= – require token for writes; without one, the UI is read-only
+- =--token= – require token for writes; without one, the UI is read-only.
+  Tokens registered for the app in home-auth are accepted too, so this
+  flag is only for setups without a provider
 - =--base-path= – URL prefix when served behind a reverse proxy (e.g. =/notes=)
+- =--oidc-client-name= – ask home-auth on this host for the credentials
+  registered under that name; enables browser sign-in on its own
+- =--oidc-local-url= – home-auth address on this host (default
+  =http://127.0.0.1:3001=)
+- =--oidc-issuer= – OIDC issuer URL; enables browser sign-in
+- =--oidc-client-id=, =--oidc-client-secret= – client credentials, when
+  not fetched by name (the secret can come from
+  =TEXTPOD_OIDC_CLIENT_SECRET= instead)
+- =--public-url= – public URL of the app, used to build the redirect URI
+
+** Sign-in
+With sign-in configured, the footer carries a sign-in link and writes
+from the browser need a session:
+
+#+begin_src sh
+textpod --base-path /notes \
+        --public-url https://hotter.myaddr.dev/notes \
+        --oidc-client-name Textpod
+#+end_src
+
+The issuer, client id, secret and the app's API tokens are fetched at
+startup from home-auth over loopback, so no credential sits in the
+command line.  Give
+=--oidc-issuer= and =--oidc-client-id=/=--oidc-client-secret= instead to
+configure them by hand.
+
+The redirect URI to register with the provider is =<public-url>/auth/callback=.
+Routes are =/auth/login=, =/auth/callback= and =/auth/logout=.
+
+API clients (=textpod.el=) keep authenticating with
+=Authorization: Bearer <token>=; the accepted tokens are the ones
+registered for Textpod in home-auth, plus =--token= when given.  A
+session or any accepted token is enough for a write; with no token
+anywhere and no provider the app is fully open.
 
 Example of live results are here – https://hotter.myaddr.dev/notes.
 
