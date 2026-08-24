@@ -168,6 +168,26 @@ section.note li code {
     border-radius: 2px;
 }
 
+/* Mindmap ASCII-art blocks (org-mindmap, via textpod.el's special-block
+ * export). Diagrams commonly run wider than the note column, so the
+ * block breaks out to the viewport width instead of wrapping/scrolling
+ * inside the narrow column; overflow-x still guards very wide diagrams
+ * on narrow viewports.
+ * body is centered (margin: 2rem auto — see blog.css), so the
+ * breakout uses the standard centered-container `calc(50% - 50vw)'
+ * trick on both sides. */
+section.note pre.mindmap {
+    width: 100vw;
+    max-width: 100vw;
+    box-sizing: border-box;
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
+    padding: 1rem 2vw;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.3;
+}
+
 /* Note metadata header — sits right after the first heading.
  * Mirrors knlb.dev's defocused timestamp headers. */
 section.note p.subtitle {

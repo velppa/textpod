@@ -375,6 +375,7 @@ comments at blank lines and leak the closing `-->' as text.")
     (headline           . textpod--headline)
     (link               . textpod--link)
     (quote-block        . textpod--quote-block)
+    (special-block      . textpod--special-block)
     (src-block          . textpod--src-block)))
 
 (defun textpod--tags-span-to-colons (html)
@@ -508,6 +509,25 @@ A `#+NAME:' on the block becomes the footer attribution."
                 (org-trim (org-export-data caption info))
                 code)
       (format "<pre class=\"code\"><code>%s</code></pre>" code))))
+
+(defun textpod--special-block (special-block contents info)
+  "Render SPECIAL-BLOCK; a \"mindmap\" block becomes a verbatim <pre>.
+Org exports a special block's body through the normal paragraph
+transcoder, whose HTML carries no `white-space: pre'; a browser then
+collapses the indentation and line breaks an ASCII-art mind map (from
+`org-mindmap') depends on.  Pulling the raw buffer text between
+`#+begin_mindmap' and `#+end_mindmap' and escaping it directly avoids
+that reinterpretation.  Any other block type keeps the default
+special-block rendering."
+  (let ((type (org-element-property :type special-block)))
+    (if (string-equal (downcase type) "mindmap")
+        (let ((raw (org-with-wide-buffer
+                    (buffer-substring-no-properties
+                     (org-element-property :contents-begin special-block)
+                     (org-element-property :contents-end special-block)))))
+          (format "<pre class=\"mindmap\">%s</pre>"
+                  (org-html-encode-plain-text (string-trim-right raw))))
+      (org-html-special-block special-block contents info))))
 
 ;;;###autoload
 (defun textpod-export-as-string (org-text)

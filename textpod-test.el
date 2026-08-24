@@ -144,6 +144,36 @@ replaced, leaving the leading spans untouched."
     (should (string-match-p "<pre class=\"code\">" html))))
 
 
+;;;; special-block / mindmap
+
+(ert-deftest textpod-test/export-mindmap-block-is-pre ()
+  "A mindmap block renders as a verbatim <pre class=\"mindmap\">,
+preserving indentation and line breaks (regression: the default
+special-block export wraps the body in <p>, whose HTML carries no
+`white-space: pre', so a browser collapses the ASCII-art layout)."
+  (let ((html (textpod-test--export
+               "#+begin_mindmap\n  a ─┬─ b\n     ╰─ c\n#+end_mindmap\n")))
+    (should (string-match-p "<pre class=\"mindmap\">" html))
+    (should (string-match-p "  a ─┬─ b\n     ╰─ c" html))
+    (should-not (string-match-p "<p>" html))))
+
+(ert-deftest textpod-test/export-mindmap-block-not-reinterpreted ()
+  "Mindmap content is pulled from the raw buffer, not from the
+parsed-and-re-exported paragraph, so characters that look like Org
+emphasis or HTML markup pass through literally."
+  (let ((html (textpod-test--export
+               "#+begin_mindmap\n*not bold* <tag> a_b\n#+end_mindmap\n")))
+    (should (string-match-p (regexp-quote "*not bold* &lt;tag&gt; a_b") html))
+    (should-not (string-match-p "<b>\\|<em>" html))))
+
+(ert-deftest textpod-test/export-other-special-block-unchanged ()
+  "A special block that isn't \"mindmap\" keeps the default rendering."
+  (let ((html (textpod-test--export
+               "#+begin_note\nJust a note.\n#+end_note\n")))
+    (should (string-match-p "<div class=\"note\"" html))
+    (should-not (string-match-p "<pre class=\"mindmap\">" html))))
+
+
 ;;;; local-path
 
 (ert-deftest textpod-test/local-path-file-uri ()
