@@ -56,6 +56,13 @@ The prefix is stripped before sending requests to the Textpod server."
   :type 'string
   :group 'textpod)
 
+;; plz's default connect timeout of a few seconds is too short for servers
+;; whose TCP handshake occasionally needs SYN retransmits.
+(defcustom textpod-connect-timeout 30
+  "Seconds to wait for a connection to the Textpod server."
+  :type 'number
+  :group 'textpod)
+
 ;;;; Commands
 
 ;;;###autoload
@@ -133,12 +140,12 @@ uses the current top-level heading."
          (out (textpod--upload-local-links out default-directory))
          (json-body (json-encode out)))
     (if existing-id
-        (plz 'put (concat textpod-url "/notes/" existing-id)
+        (textpod--plz 'put (concat textpod-url "/notes/" existing-id)
           :headers (textpod--headers)
           :body json-body
           :then (lambda (_) (message "Note updated in Textpod: %s" existing-id))
           :else (lambda (err) (message "Textpod error: %s" err)))
-      (plz 'post (concat textpod-url "/notes")
+      (textpod--plz 'post (concat textpod-url "/notes")
         :headers (textpod--headers)
         :body json-body
         :as 'string
@@ -253,6 +260,12 @@ BASE-DIR is used to resolve relative src paths."
          match)))
    html))
 
+(defun textpod--plz (method url &rest rest)
+  "Request URL with METHOD via `plz', passing REST through.
+Connect with `textpod-connect-timeout'."
+  (let ((plz-connect-timeout textpod-connect-timeout))
+    (apply #'plz method url rest)))
+
 (defun textpod--auth-headers ()
   "Return auth headers (no Content-Type)."
   (when textpod-token
@@ -263,7 +276,7 @@ BASE-DIR is used to resolve relative src paths."
 The hash is the unquoted ETag of a HEAD request; nil also when the
 server predates ETag support."
   (condition-case nil
-      (let ((resp (plz 'head (concat textpod-url "/assets/" name)
+      (let ((resp (textpod--plz 'head (concat textpod-url "/assets/" name)
                     :headers (textpod--auth-headers)
                     :as 'response)))
         (when (= 204 (plz-response-status resp))
@@ -284,7 +297,7 @@ Skips upload when the server already has identical content."
   (let ((name (file-name-nondirectory file-path)))
     (unless (equal (textpod--asset-etag name)
                    (textpod--file-sha256 file-path))
-      (plz 'put (concat textpod-url "/assets/" name)
+      (textpod--plz 'put (concat textpod-url "/assets/" name)
         :headers (append (textpod--auth-headers)
                          '(("Content-Type" . "application/octet-stream")))
         :body-type 'binary
@@ -372,7 +385,8 @@ comments at blank lines and leak the closing `-->' as text.")
     (:html-toplevel-hlevel nil "H" 1))
   :translate-alist
   '((footnote-reference . textpod--footnote-reference)
-    (headline           . textpod--headline)
+     (headline           . textpod--headline)
+     (section            . textpod--section)
     (link               . textpod--link)
     (quote-block        . textpod--quote-block)
     (special-block      . textpod--special-block)
@@ -391,7 +405,7 @@ Returns HTML unchanged if it isn't a string."
   (if (not (stringp html))
       html
     (replace-regexp-in-string
-     "\\(?:&#xa0;\\|[ \t\n]\\)*<span class=\"tag\">\\(?:<span class=\"[^\"]+\">[^<]+</span>\\(?:&#xa0;\\)?\\)+</span>"
+     "\\(?:&#xa0;\\|&nbsp;?\\|[ \t\n]\\)*<span class=\"tag\">\\(?:<span class=\"[^\"]+\">[^<]+</span>\\(?:&#xa0;\\|&nbsp;?\\)?\\)+</span>"
      (lambda (match)
        ;; The inner-tag regex requires `[^<]+' between the open/close
        ;; spans, so the outer `<span class="tag">' wrapper (which
@@ -413,26 +427,8 @@ Returns HTML unchanged if it isn't a string."
      html t t)))
 
 (defun textpod--headline (headline contents info)
-  "Render headlines with <article>/<section> wrappers instead of
-the default <div class=\"outline-N\"> / <div class=\"outline-text-N\">.
-
-The page's CSS width rules target `section > p' / `section > table'
-etc.; only direct children of <section> get the narrow-column layout.
-The default ox-html wrappers are <div>s, so those rules never
-fire.  We swap:
-
-  <div ... class=\"outline-1\">          → <article>   (top-level only)
-  <div ... class=\"outline-N>1\">        → <section>
-  <div ... class=\"outline-text-N\">     → <section>
-
-leaving headline tags and child subtree blocks untouched.  Only
-the outermost top-level headline becomes an <article>; nested
-subheadings become <section>s so each h2 isn't wrapped in its own
-<article>.
-
-Falls back to `org-html-headline' for list-style headlines, where
-the output isn't a wrapper-div pair and rewriting would corrupt
-structure."
+  "Render top-level headlines as articles and nested headlines as sections.
+Preserve heading contents and standard rendering of list-style headlines."
   (let ((html (textpod--tags-span-to-colons
                (org-html-headline headline contents info)))
         (level (org-export-get-relative-level headline info)))
@@ -446,18 +442,16 @@ structure."
           (if (string-suffix-p close trimmed)
               (let ((inner (substring trimmed body-start
                                       (- (length trimmed) (length close)))))
-                (setq inner
-                      (replace-regexp-in-string
-                       "<div class=\"outline-text-[0-9]+\" id=\"text-[^\"]+\">"
-                       "<section>" inner))
-                (setq inner
-                      (replace-regexp-in-string
-                       "</div>" "</section>" inner))
                 (if (= level 1)
                     (concat "<article>" inner "</article>\n")
                   (concat "<section>" inner "</section>\n")))
             html))
       html)))
+
+(defun textpod--section (_section contents _info)
+  "Render CONTENTS inside a section without changing nested markup."
+  (when contents
+    (format "<section>\n%s</section>\n" contents)))
 
 (defun textpod--footnote-reference (footnote-reference _contents info)
   "Render FOOTNOTE-REFERENCE as a sidenote.

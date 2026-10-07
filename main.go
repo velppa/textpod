@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	_ "embed"
+	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -46,6 +46,9 @@ var sharedCSS string
 
 //go:embed blog.css
 var blogCSS string
+
+//go:embed theme/*.jpg theme/*.webp
+var themeFiles embed.FS
 
 const noteSeparator = "\u000C"
 const contentLengthLimit = 500 * 1024 * 1024
@@ -206,6 +209,7 @@ func main() {
 	mux.HandleFunc("GET /note/{id}", server.notePage)
 	mux.HandleFunc("POST /upload", server.uploadFile)
 	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
+	mux.Handle("GET /theme/", http.FileServerFS(themeFiles))
 	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
 	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
 	if provider != nil {
@@ -346,6 +350,13 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
+	totalNotes := len(notes)
+	latestDate := "Not yet"
+	if len(notes) > 0 {
+		if timestamp, err := time.Parse(timestampLayout, notes[0].Timestamp); err == nil {
+			latestDate = timestamp.Format("02.01.2006")
+		}
+	}
 	notes = filterNotes(notes, search)
 	pageNotes, page, pages := paginateNotes(notes, page, pageSize)
 
@@ -358,15 +369,47 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		b.WriteString(injectSubtitle(body, link))
 		b.WriteString("</section>\n")
 	}
+	if len(pageNotes) == 0 {
+		b.WriteString(`<p class="empty-state">No notes found. Try another search.</p>`)
+	}
 
 	out := strings.ReplaceAll(s.HTML, "{{BLOG_CSS}}", blogCSS)
 	out = strings.ReplaceAll(out, "{{SHARED_CSS}}", sharedCSS)
+	out = strings.ReplaceAll(out, "{{HEADER}}", blogHeader(s.BasePath))
+	out = strings.ReplaceAll(out, "{{BASE_PATH}}", html.EscapeString(s.BasePath))
+	out = strings.ReplaceAll(out, "{{NOTE_COUNT}}", strconv.Itoa(totalNotes))
+	out = strings.ReplaceAll(out, "{{LATEST_DATE}}", latestDate)
+	viewClass, indexLabel := "home-view", "Part A / The notebook"
+	if search != "" {
+		viewClass, indexLabel = "archive-view", fmt.Sprintf("Search / %d matching notes", len(notes))
+	} else if page > 1 {
+		viewClass, indexLabel = "archive-view", fmt.Sprintf("Archive / Page %d of %d", page, pages)
+	}
+	out = strings.ReplaceAll(out, "{{VIEW_CLASS}}", viewClass)
+	out = strings.ReplaceAll(out, "{{INDEX_LABEL}}", indexLabel)
 	out = strings.ReplaceAll(out, "{{SEARCH_BOX}}", searchBoxHTML(s.BasePath, search))
 	out = strings.ReplaceAll(out, "{{NOTES}}", b.String())
 	out = strings.ReplaceAll(out, "{{PAGER}}", pagerHTML(s.BasePath, search, page, pages))
 	out = strings.ReplaceAll(out, "{{AUTH}}", s.authLinkHTML(r))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, out)
+}
+
+// blogHeader returns the blog's navigation and skip link.
+func blogHeader(basePath string) string {
+	home := html.EscapeString(basePath + "/")
+	return fmt.Sprintf(`<a class="skip-link eyebrow" href="#notes">Skip to notes</a>
+<header class="site-header">
+    <a class="site-brand" href="%s" aria-label="Hotter home">
+        <svg class="site-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1v22M1 12h22M4.2 4.2l15.6 15.6M4.2 19.8L19.8 4.2" fill="none" stroke="currentColor" stroke-width="3"/></svg>
+        <span>Hotter</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+        <a href="%s#notes"><span class="eyebrow">01 / Notebook</span><span>Latest notes</span></a>
+        <a href="%s#search"><span class="eyebrow">02 / Archive</span><span>Find something</span></a>
+        <a href="https://github.com/velppa"><span class="eyebrow">03 / Author</span><span>Pavel Popov</span></a>
+    </nav>
+</header>`, home, home, home)
 }
 
 func getCookieValue(r *http.Request, name string) (string, bool) {
@@ -471,22 +514,23 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 	idJSON, _ := json.Marshal(note.ID)
 	basePathJSON, _ := json.Marshal(s.BasePath)
 	page := fmt.Sprintf(`<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="utf-8" />
     <title>%s | Hotter</title>
     <meta name="color-scheme" content="light dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&amp;display=swap" rel="stylesheet">
     <style>
         %s
         %s
     </style>
 </head>
-<body>
-    <section id="noteView" class="note">%s</section>
-    <footer>Hotter%s</footer>
+<body class="note-page" id="top">
+    %s
+    <main id="notes"><section id="noteView" class="note">%s</section></main>
+    <footer class="site-footer"><span>Hotter / Pavel Popov%s</span><a href="#top">Back to top ↑</a></footer>
     <script>
         (function() {
             const deleteLink = document.getElementById('deleteLink');
@@ -527,15 +571,26 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
                     li.appendChild(a);
                     ul.appendChild(li);
                 });
-                const box = document.createElement('aside');
+                const box = document.createElement('details');
                 box.className = 'note-toc';
+                const summary = document.createElement('summary');
+                summary.textContent = 'In this note';
+                box.appendChild(summary);
                 box.appendChild(ul);
-                subtitle.parentNode.insertBefore(box, subtitle.nextSibling);
+                const wide = matchMedia('(min-width: 761px)');
+                const expandContents = () => { box.open = wide.matches; };
+                expandContents();
+                wide.addEventListener('change', expandContents);
+                const content = document.createElement('div');
+                content.className = 'note-content';
+                while (subtitle.nextSibling) content.appendChild(subtitle.nextSibling);
+                subtitle.parentNode.appendChild(content);
+                subtitle.parentNode.insertBefore(box, content);
             }
         })();
     </script>
 </body>
-</html>`, title, blogCSS, sharedCSS, noteBody, s.authLinkHTML(r),
+	</html>`, title, strings.ReplaceAll(blogCSS, "{{BASE_PATH}}", s.BasePath), sharedCSS, blogHeader(s.BasePath), noteBody, s.authLinkHTML(r),
 		basePathJSON, idJSON, basePathJSON)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, page)
@@ -897,7 +952,7 @@ func parsePage(s string) int {
 
 func searchBoxHTML(basePath, q string) string {
 	return fmt.Sprintf(`<form class="search" method="get" action="%s/">`+
-		`<input type="search" name="q" value="%s" placeholder="Search…"></form>`,
+		`<input id="note-search" type="search" name="q" value="%s" placeholder="Search…"></form>`,
 		basePath, html.EscapeString(q))
 }
 
@@ -1166,6 +1221,20 @@ var md = goldmark.New(
 	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 )
 
+var legacyEpigraphRe = regexp.MustCompile(`(?s)<div class="epigraph">\s*<blockquote>.*?</blockquote>\s*</section>`)
+var mindmapRe = regexp.MustCompile(`(?s)<pre class="mindmap"[^>]*>.*?</pre>`)
+
+// repairLegacyEpigraphs repairs flat epigraphs closed with a section tag.
+func repairLegacyEpigraphs(content string) string {
+	return legacyEpigraphRe.ReplaceAllStringFunc(content, func(block string) string {
+		// ponytail: flat legacy epigraphs only; nested repair needs an HTML tokenizer.
+		if strings.Count(block, "<blockquote>") != 1 {
+			return block
+		}
+		return strings.TrimSuffix(block, "</section>") + "</div>"
+	})
+}
+
 func noteToHTML(content, basePath string, isKnownID func(string) bool) string {
 	var out string
 	if isHTML(content) {
@@ -1177,6 +1246,8 @@ func noteToHTML(content, basePath string, isKnownID func(string) bool) string {
 		}
 		out = buf.String()
 	}
+	out = repairLegacyEpigraphs(out)
+	out = mindmapRe.ReplaceAllString(out, `<div class="mindmap-frame">${0}</div>`)
 	out = rewriteFileLinks(out, basePath, isKnownID)
 	out = rewriteAttachmentLinks(out, basePath)
 	out = addLazyLoadingToImages(out)

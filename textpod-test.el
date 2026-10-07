@@ -78,7 +78,15 @@ replaced, leaving the leading spans untouched."
              "<span class=\"B\">B</span></span></h2>"
              "<h2>Two <span class=\"tag\">"
              "<span class=\"C\">C</span></span></h2>"))
-    "<h2>One :A:B:</h2><h2>Two :C:</h2>")))
+     "<h2>One :A:B:</h2><h2>Two :C:</h2>")))
+
+(ert-deftest textpod-test/tags-named-nonbreaking-space ()
+  "Named HTML spaces between tags collapse like numeric HTML spaces."
+  (should
+   (equal
+    (textpod--tags-span-to-colons
+     "<h2>Title&nbsp;<span class=\"tag\"><span class=\"Blog\">Blog</span>&nbsp;<span class=\"Tech\">Tech</span></span></h2>")
+    "<h2>Title :Blog:Tech:</h2>")))
 
 
 ;;;; End-to-end export
@@ -96,7 +104,24 @@ replaced, leaving the leading spans untouched."
                "* Top\n** Inner\nBody.\n")))
     (should (string-match-p "<article>" html))
     (should (string-match-p "</article>" html))
-    (should (string-match-p "<section>" html))))
+     (should (string-match-p "<section>" html))))
+
+(ert-deftest textpod-test/export-headline-preserves-quote-wrappers ()
+  "Quotes keep their div wrapper and following headings remain in the article."
+  (let ((html (textpod-test--export
+               "* Workflow\n#+begin_quote\nA quotation.\n#+end_quote\nAfter the quote.\n** Video\nDetails.\n")))
+    (should (string-match-p "</blockquote></div>" html))
+    (should-not (string-match-p "</blockquote></section>" html))
+    (should (string-match-p "After the quote" html))
+    (should (string-match-p "Video" html))))
+
+(ert-deftest textpod-test/export-headline-preserves-special-block-wrappers ()
+  "Special blocks keep their own wrapper inside a headline."
+  (let ((html (textpod-test--export
+               "* Note\n#+begin_note\nImportant text.\n#+end_note\n** Next\nMore text.\n")))
+    (should (string-match-p "<div class=\"note\"" html))
+    (should (string-match-p "</div>" html))
+    (should (string-match-p "Next" html))))
 
 (ert-deftest textpod-test/export-footnote-becomes-sidenote ()
   "Footnote references render as sidenote markup."
@@ -251,6 +276,15 @@ Return non-nil when the asset body was uploaded."
 (ert-deftest textpod-test/upload-asset-absent-uploads ()
   "Missing asset (or pre-ETag server) uploads."
   (should (textpod-test--upload-with-etag nil)))
+
+;;;; Requests
+
+(ert-deftest textpod-test/plz-uses-connect-timeout ()
+  (let ((textpod-connect-timeout 42) seen)
+    (cl-letf (((symbol-function 'plz)
+               (lambda (&rest _) (setq seen plz-connect-timeout))))
+      (textpod--plz 'get "http://example.invalid")
+      (should (equal seen 42)))))
 
 (provide 'textpod-test)
 ;;; textpod-test.el ends here

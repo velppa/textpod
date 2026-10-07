@@ -1,25 +1,51 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Hotter</title>
+    <meta charset="utf-8" />
+    <title>Hotter — Pavel Popov’s notebook</title>
+    <meta name="description" content="Notes on software, Emacs, useful tools and things worth keeping. A personal notebook by Pavel Popov." />
     <meta name="color-scheme" content="light dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="shortcut icon" href="{{FAVICON}}" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&amp;display=swap" rel="stylesheet">
     <style>
         {{BLOG_CSS}}
         {{SHARED_CSS}}
     </style>
 </head>
 
-<body>
-    {{SEARCH_BOX}}
+<body class="{{VIEW_CLASS}}" id="top">
+    {{HEADER}}
+    <section class="hero" aria-labelledby="site-title">
+        <p class="eyebrow hero-label">Pavel Popov / A personal notebook</p>
+        <h1 class="display-title" id="site-title">Hotter<br>notes.</h1>
+        <div class="hero-intro">
+            <p class="hero-statement">Small tools.<br>Open questions.<br>Things worth keeping.</p>
+            <p class="hero-description">A working notebook on software, Emacs and making useful things. Collected links, experiments and notes along the way.</p>
+        </div>
+        <dl class="fields">
+            <div><dt>Written by</dt><dd>Pavel Popov</dd></div>
+            <div><dt>Format</dt><dd>An open notebook</dd></div>
+            <div><dt>In the archive</dt><dd>{{NOTE_COUNT}} notes</dd></div>
+            <div><dt>Last entry</dt><dd>{{LATEST_DATE}}</dd></div>
+        </dl>
+    </section>
+    <section class="archive-head" aria-labelledby="archive-title">
+        <div>
+            <p class="eyebrow">{{INDEX_LABEL}}</p>
+            <h2 class="display-title" id="archive-title">Notes &amp;<br>other things.</h2>
+        </div>
+        <div class="archive-search" id="search">
+            <label class="eyebrow" for="note-search">Look something up</label>
+            {{SEARCH_BOX}}
+            <p class="search-hint">A word, a topic, a passing thought.</p>
+        </div>
+    </section>
     <main id="notes">{{NOTES}}</main>
     {{PAGER}}
-    <footer>Hotter{{AUTH}}</footer>
+    <footer class="site-footer"><span>Hotter / Pavel Popov{{AUTH}}</span><a href="#top">Back to top ↑</a></footer>
 </body>
 
 </html>

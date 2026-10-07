@@ -1,29 +1,40 @@
-/* Textpod overlay — applied AFTER blog.css.
- * blog.css supplies the palette tokens (--bg-color, --bg-accent,
- * --bg-highlight, --color, --highlight, --defocus-opacity), base
- * typography, body width, link, blockquote, code, and image styling.
- * This file adds Textpod-only features: tag chips, note metadata, dense
- * table tweaks, definition lists, the per-note ToC marginnote, and
- * details/summary collapse styling.
- * Do NOT redefine palette or body width/font here. */
+/* Note layouts, metadata, tags and expandable content. */
 
 html {
     font-size: 16px;
 }
 
-@media (max-width: 760px) {
-    html {
-        font-size: 14px;
-    }
-}
-
 section.note {
-    margin-bottom: 3em;
+    container-type: inline-size;
+    display: grid;
+    grid-template-columns: minmax(140px, 2fr) minmax(0, 8fr) minmax(0, 1fr);
+    column-gap: var(--pad);
+    align-items: start;
+    margin-inline: calc(-1 * var(--margin));
+    padding: clamp(40px, 5vw, 72px) var(--margin);
+    border-top: 1px solid var(--bg-accent);
+    background: var(--paper-grain), var(--panel-blue);
+    background-blend-mode: var(--paper-blend);
 }
 
-section.note:not(:last-child) {
-    border-bottom: 1px solid var(--bg-accent);
-    padding-bottom: 2em;
+section.note:nth-child(3n+2) { background-color: var(--panel-purple); }
+section.note:nth-child(3n+3) { background-color: var(--panel-warm); }
+section.note > article { display: contents; }
+
+section.note > *, section.note > article > * {
+    grid-column: 2;
+    min-width: 0;
+    max-width: var(--text-width);
+}
+
+section.note > :is(h1, h2, h3, h4, h5, h6):first-child,
+section.note > article > :is(h1, h2, h3, h4, h5, h6):first-child {
+    grid-column: 2 / -1;
+    max-width: 24ch;
+    margin-top: 0;
+    margin-bottom: 24px;
+    font-size: clamp(36px, 4.5vw, 68px);
+    line-height: .98;
 }
 
 /* Headings: Textpod uses a flex layout to push tag chips to the
@@ -56,16 +67,17 @@ section.note h6 > span {
 
 section.note .tags {
     margin-left: auto;
-    flex-shrink: 0;
+    flex: 0 0 auto;
 }
 
 a.tag {
-    font-size: 0.75em;
-    font-weight: normal;
-    padding: 0.15em 0.5em;
-    background-color: var(--bg-highlight);
+    display: inline-block;
+    font: 400 12px/1.4 var(--font-mono);
+    letter-spacing: 0;
+    padding: .25em .5em;
+    background-color: transparent;
     border: 1px solid var(--bg-accent);
-    border-radius: 3px;
+    border-radius: 0;
     text-decoration: none;
     color: var(--color);
     opacity: var(--defocus-opacity);
@@ -99,6 +111,9 @@ section.note details > summary {
     list-style: revert;
     color: var(--highlight);
     font-size: 1.2rem;
+    font-weight: 700;
+    padding-block: 12px;
+    border-top: 1px solid color-mix(in srgb, var(--color) 30%, transparent);
 }
 
 section.note details {
@@ -108,13 +123,13 @@ section.note details {
 /* Dense tables for wide pasted data. */
 section.note table {
     border-collapse: collapse;
-    font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 0.9rem;
     display: block;
     max-width: 100%;
     overflow-x: auto;
     width: auto;
-    background-color: var(--bg-highlight);
+    background-color: transparent;
 }
 
 section.note table th,
@@ -131,71 +146,86 @@ section.note table th {
     font-weight: 600;
 }
 
-/* Definition lists rendered as `key — value` on one line.  dt sits
- * in a self-sized column, dd flows in the remaining width and
- * wraps under the value, not under the key. */
+/* Ruled key/value rows with compact labels and wrapping values. */
 section.note dl {
-    margin: 1em 0;
+    display: grid;
+    grid-template-columns: fit-content(25%) minmax(0, 1fr);
+    column-gap: 24px;
+    margin: 24px 0;
+    border-top: 1px solid color-mix(in srgb, var(--color) 30%, transparent);
+}
+
+section.note dl dt, section.note dl dd {
+    min-width: 0;
+    margin: 0;
+    padding-block: 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color) 30%, transparent);
+    overflow-wrap: anywhere;
 }
 
 section.note dl dt {
-    display: inline;
-    font-weight: 600;
-    margin: 0;
-}
-
-section.note dl dt::after {
-    content: " — ";
-    font-weight: normal;
+    grid-column: 1;
+    padding-top: 16px;
+    font: 700 11px/1.7 var(--font-sans);
+    letter-spacing: .08em;
+    text-transform: uppercase;
 }
 
 section.note dl dd {
-    display: inline;
-    margin: 0;
-}
-
-section.note dl dd::after {
-    content: "";
-    display: block;
-    margin-bottom: 0.25em;
+    grid-column: 2;
 }
 
 /* Inline code chip. */
 section.note p code,
 section.note li code {
     padding: 0.1em 0.3em;
-    background-color: var(--bg-highlight);
-    border-radius: 2px;
+    background-color: color-mix(in srgb, var(--bg-color) 55%, transparent);
+    border-radius: 0;
 }
 
-/* Mindmap ASCII-art blocks (org-mindmap, via textpod.el's special-block
- * export). Diagrams commonly run wider than the note column, so the
- * block breaks out to the viewport width instead of wrapping/scrolling
- * inside the narrow column; overflow-x still guards very wide diagrams
- * on narrow viewports.
- * body is centered (margin: 2rem auto — see blog.css), so the
- * breakout uses the standard centered-container `calc(50% - 50vw)'
- * trick on both sides. */
+/* Center diagrams at their natural width, beyond the text column if needed. */
+section.note .mindmap-frame {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    width: 100cqw;
+    max-width: 100cqw;
+    margin-block: 1.5rem;
+    margin-inline-start: calc(-1 * (max(140px, calc((100cqw - 2 * var(--pad)) * 2 / 11)) + var(--pad)));
+}
+
+section.note > .mindmap-frame,
+section.note > article > .mindmap-frame {
+    grid-column: 1 / -1;
+    margin-inline-start: 0;
+}
+
 section.note pre.mindmap {
-    width: 100vw;
-    max-width: 100vw;
-    box-sizing: border-box;
-    margin-left: calc(50% - 50vw);
-    margin-right: calc(50% - 50vw);
-    padding: 1rem 2vw;
+    min-width: 0;
+    width: max-content;
+    max-width: 100%;
+    margin: 0;
+    padding: 1rem;
     overflow-x: auto;
     font-size: 0.85rem;
     line-height: 1.3;
 }
 
-/* Note metadata header — sits right after the first heading.
- * Mirrors knlb.dev's defocused timestamp headers. */
+/* Dates and tags occupy the note's left margin on wide screens. */
 section.note p.subtitle {
-    font-size: 0.85rem;
-    font-style: normal;
+    grid-column: 1;
+    grid-row: 1;
+    font: 400 12px/1.7 var(--font-mono);
     opacity: var(--defocus-opacity);
-    margin-top: -0.4rem;
-    margin-bottom: 1.5rem;
+    margin: 0;
+    padding-top: 6px;
+    overflow-wrap: anywhere;
+}
+
+section.note p.subtitle time { display: block; }
+section.note p.subtitle .tags {
+    display: block;
+    margin: 16px 0 0;
 }
 
 section.note p.subtitle a {
@@ -238,27 +268,26 @@ section.note p.subtitle a::after {
     content: none !important;
 }
 
-/* JS-built per-note ToC.  Sits below the subtitle, floated to the
- * right so body text wraps to its left. */
-.note-toc {
-    float: right;
-    clear: right;
-    width: 30%;
-    margin: 0 0 1em 1em;
-    padding: 0.5em 0.75em;
-    background-color: var(--bg-highlight);
-    border-left: 1px solid var(--bg-accent);
-    box-sizing: border-box;
-    font-size: 0.75rem;
-    line-height: 1.3;
+/* A small contents index beside the article. */
+section.note .note-toc {
+    grid-column: 1;
+    grid-row: 2;
+    position: sticky;
+    top: calc(var(--head-height) + 24px);
+    margin: 0;
+    padding-top: 12px;
+    border-top: 1px solid var(--bg-accent);
+    font: 400 12px/1.5 var(--font-mono);
     opacity: var(--defocus-opacity);
 }
 
-.note-toc::before {
-    content: "ToC";
-    display: block;
-    font-weight: 600;
-    margin-bottom: 0.3em;
+section.note .note-toc > summary {
+    padding: 0 0 8px;
+    border: 0;
+    color: inherit;
+    font: 700 11px/1.5 var(--font-sans);
+    letter-spacing: .06em;
+    text-transform: uppercase;
 }
 
 .note-toc ul {
@@ -289,11 +318,24 @@ section.note p.subtitle a::after {
 }
 
 @media (max-width: 760px) {
-    .note-toc {
-        float: none;
-        width: auto;
-        margin: 0.5em 0 1em 0;
+    section.note { grid-template-columns: minmax(0, 1fr); }
+    section.note > *, section.note > article > * { grid-column: 1; }
+    section.note > :is(h1, h2, h3, h4, h5, h6):first-child,
+    section.note > article > :is(h1, h2, h3, h4, h5, h6):first-child {
+        grid-column: 1;
+        grid-row: 1;
+        font-size: clamp(34px, 8vw, 52px);
+        margin-bottom: 16px;
     }
+    section.note p.subtitle { grid-row: 2; margin-bottom: 24px; }
+    section.note p.subtitle time { display: inline; }
+    section.note p.subtitle .tags { display: inline; margin: 0; }
+    section.note .note-toc {
+        grid-row: auto;
+        position: static;
+        margin: 0 0 24px;
+    }
+    section.note .mindmap-frame { margin-inline-start: 0; }
 }
 
 /* Images: respect width/height attributes; shrink if wider than column. */

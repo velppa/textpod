@@ -30,7 +30,7 @@ go install github.com/velppa/textpod@latest
 Or from a local checkout:
 
 #+begin_src sh
-go build -o textpod .
+go build -o bin/textpod .
 #+end_src
 
 ** Usage
