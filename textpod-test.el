@@ -132,6 +132,13 @@ replaced, leaving the leading spans untouched."
     ;; The default ox-html footnotes section is suppressed.
     (should-not (string-match-p "id=\"footnotes\"" html))))
 
+(ert-deftest textpod-test/export-footnote-keeps-src-block ()
+  "A src block inside a footnote keeps its <pre> wrapper."
+  (let ((html (textpod-test--export
+               "Body[fn:1] text.\n\n[fn:1] Code:\n#+begin_src elisp\n(+ 1 2)\n#+end_src\n")))
+    (should (string-match-p "class=\"sidenote\">\\(?:.\\|\n\\)*<pre" html))
+    (should (string-match-p "</pre>" html))))
+
 (ert-deftest textpod-test/export-margin-note-link ()
   "An `mn:LABEL' fuzzy link renders as marginnote markup."
   (let ((html (textpod-test--export

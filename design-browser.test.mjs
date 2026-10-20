@@ -76,8 +76,9 @@ test("local blog works across themes, viewports and navigation", async t => {
     await page.navigate(preview);
 
     await t.test("desktop homepage and accessible search", async () => {
-        assert.equal(await page.evaluate('getComputedStyle(document.querySelector(".hero")).backgroundColor'), "rgb(238, 255, 0)");
-        assert.equal(await page.evaluate('document.querySelector("label[for=note-search]").control === document.querySelector("#note-search")'), true);
+        assert.equal(await page.evaluate('document.querySelector(".hero") === null'), true);
+        assert.equal(await page.evaluate('getComputedStyle(document.querySelector(".site-header")).backgroundColor'), "rgb(238, 255, 0)");
+        assert.equal(await page.evaluate('document.querySelector("#note-search").getAttribute("aria-label") === "Search notes"'), true);
         assert.equal(await page.evaluate('[...document.fonts].some(font => font.family === "Satoshi" && font.status === "loaded")'), true);
         assert.equal(await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
         await page.screenshot("textpod-desktop-light");
@@ -90,9 +91,9 @@ test("local blog works across themes, viewports and navigation", async t => {
     await t.test("scanned paper and worn ink load from the blog itself", async () => {
         const textures = await page.evaluate(String.raw`(async () => {
             const imageURL = value => new URL(value.match(/url\("([^"]+)"\)/)[1], location.href);
-            const paperURL = imageURL(getComputedStyle(document.querySelector('.hero')).backgroundImage);
+            const paperURL = imageURL(getComputedStyle(document.querySelector('.site-header')).backgroundImage);
             const darkURL = imageURL(getComputedStyle(document.documentElement).getPropertyValue('--paper-dark'));
-            const inkURL = imageURL(getComputedStyle(document.querySelector('.hero h1')).maskImage);
+            const inkURL = imageURL(getComputedStyle(document.querySelector('.archive-head h1')).maskImage);
             const load = async url => {
                 const image = new Image();
                 image.src = url.href;
@@ -127,8 +128,8 @@ test("local blog works across themes, viewports and navigation", async t => {
         await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
         assert.equal(await page.evaluate('getComputedStyle(document.body).backgroundColor'), "rgb(20, 20, 19)");
         assert.match(await page.evaluate('getComputedStyle(document.body).backgroundImage'), /paper-305-dark-tile\.jpg/);
-        assert.match(await page.evaluate('getComputedStyle(document.querySelector(".hero")).backgroundImage'), /paper-305-tile\.jpg/);
-        assert.equal(await page.evaluate('getComputedStyle(document.querySelector(".hero")).color'), "rgb(17, 17, 17)");
+        assert.match(await page.evaluate('getComputedStyle(document.querySelector(".site-header")).backgroundImage'), /paper-305-tile\.jpg/);
+        assert.equal(await page.evaluate('getComputedStyle(document.querySelector(".site-header")).color'), "rgb(17, 17, 17)");
         assert.equal(await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
         await page.screenshot("textpod-mobile-dark");
     });
@@ -153,6 +154,7 @@ test("local blog works across themes, viewports and navigation", async t => {
     await t.test("long articles keep their contents index and expanded code within the viewport", async () => {
         await page.navigate(longNoteURL);
         assert.equal(await page.evaluate('document.querySelector(".note-toc") !== null'), true);
+        assert.equal(await page.evaluate('[...document.querySelectorAll(".note-toc li")].some(li => li.textContent.trim() === document.querySelector("#noteView .subtitle").previousElementSibling.textContent.trim())'), false);
         assert.equal(await page.evaluate('document.querySelector(".note-toc").open'), false);
         await page.evaluate('document.querySelectorAll("details:not(.note-toc)").forEach(detail => detail.open = true)');
         assert.equal(await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
@@ -160,7 +162,7 @@ test("local blog works across themes, viewports and navigation", async t => {
         await page.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
         await page.evaluate("new Promise(resolve => requestAnimationFrame(resolve))");
         assert.equal(await page.evaluate('document.querySelector(".note-toc").open'), true);
-        assert.equal(await page.evaluate('document.querySelector(".note-toc").getBoundingClientRect().right < document.querySelector(".note-content").getBoundingClientRect().left'), true);
+        assert.equal(await page.evaluate('document.querySelector(".note-toc").getBoundingClientRect().left > document.querySelector(".note-content").getBoundingClientRect().right'), true);
         assert.equal(await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
         await page.screenshot("textpod-long-note-desktop-dark");
     });
@@ -248,7 +250,6 @@ test("local blog works across themes, viewports and navigation", async t => {
 
     await t.test("search has a compact header and a useful empty state", async () => {
         await page.navigate(preview + "?q=textpod-no-match-7cd9f3");
-        assert.equal(await page.evaluate('getComputedStyle(document.querySelector(".hero")).display'), "none");
         assert.equal(await page.evaluate('document.querySelector(".empty-state") !== null'), true);
         assert.equal(await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
     });

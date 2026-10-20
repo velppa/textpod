@@ -350,13 +350,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	totalNotes := len(notes)
-	latestDate := "Not yet"
-	if len(notes) > 0 {
-		if timestamp, err := time.Parse(timestampLayout, notes[0].Timestamp); err == nil {
-			latestDate = timestamp.Format("02.01.2006")
-		}
-	}
 	notes = filterNotes(notes, search)
 	pageNotes, page, pages := paginateNotes(notes, page, pageSize)
 
@@ -377,15 +370,16 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	out = strings.ReplaceAll(out, "{{SHARED_CSS}}", sharedCSS)
 	out = strings.ReplaceAll(out, "{{HEADER}}", blogHeader(s.BasePath))
 	out = strings.ReplaceAll(out, "{{BASE_PATH}}", html.EscapeString(s.BasePath))
-	out = strings.ReplaceAll(out, "{{NOTE_COUNT}}", strconv.Itoa(totalNotes))
-	out = strings.ReplaceAll(out, "{{LATEST_DATE}}", latestDate)
-	viewClass, indexLabel := "home-view", "Part A / The notebook"
+	viewClass, indexLabel := "home-view", ""
 	if search != "" {
 		viewClass, indexLabel = "archive-view", fmt.Sprintf("Search / %d matching notes", len(notes))
 	} else if page > 1 {
 		viewClass, indexLabel = "archive-view", fmt.Sprintf("Archive / Page %d of %d", page, pages)
 	}
 	out = strings.ReplaceAll(out, "{{VIEW_CLASS}}", viewClass)
+	if indexLabel != "" {
+		indexLabel = `<p class="eyebrow">` + indexLabel + `</p>`
+	}
 	out = strings.ReplaceAll(out, "{{INDEX_LABEL}}", indexLabel)
 	out = strings.ReplaceAll(out, "{{SEARCH_BOX}}", searchBoxHTML(s.BasePath, search))
 	out = strings.ReplaceAll(out, "{{NOTES}}", b.String())
@@ -405,11 +399,11 @@ func blogHeader(basePath string) string {
         <span>Hotter</span>
     </a>
     <nav class="site-nav" aria-label="Main navigation">
-        <a href="%s#notes"><span class="eyebrow">01 / Notebook</span><span>Latest notes</span></a>
-        <a href="%s#search"><span class="eyebrow">02 / Archive</span><span>Find something</span></a>
-        <a href="https://github.com/velppa"><span class="eyebrow">03 / Author</span><span>Pavel Popov</span></a>
+        <a href="/vinboard/"><span class="eyebrow">01 / Board</span><span>Vinboard</span></a>
+        <a href="/youtube-summaries/"><span class="eyebrow">02 / Videos</span><span>YouTube Summaries</span></a>
+        <a href="/"><span class="eyebrow">03 / Hotter</span><span>Home</span></a>
     </nav>
-</header>`, home, home, home)
+</header>`, home)
 }
 
 func getCookieValue(r *http.Request, name string) (string, bool) {
@@ -505,8 +499,8 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title := html.EscapeString(noteTitle(note))
-	subtitleInner := fmt.Sprintf(`<time datetime="%s">%s</time> &middot; <a href="%s">back</a>`,
-		note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
+	subtitleInner := fmt.Sprintf(`<a href="%s/note/%s"><time datetime="%s">%s</time></a> &middot; <a href="%s">back</a>`,
+		s.BasePath, note.ID, note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
 	if s.canWrite(r) {
 		subtitleInner += ` &middot; <a href="#" id="deleteLink">delete</a>`
 	}
@@ -530,7 +524,7 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 <body class="note-page" id="top">
     %s
     <main id="notes"><section id="noteView" class="note">%s</section></main>
-    <footer class="site-footer"><span>Hotter / Pavel Popov%s</span><a href="#top">Back to top ↑</a></footer>
+    <footer class="site-footer"><span>Hotter%s</span><a href="#top">Back to top ↑</a></footer>
     <script>
         (function() {
             const deleteLink = document.getElementById('deleteLink');
@@ -550,20 +544,18 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
             }
         })();
         (function() {
-            const headings = document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6');
             const subtitle = document.querySelector('.note .subtitle');
-            if (headings.length >= 2 && subtitle) {
+            const headings = [...document.querySelectorAll('.note h1, .note h2, .note h3, .note h4, .note h5, .note h6')]
+                .filter(h => h.nextElementSibling !== subtitle);
+            if (headings.length >= 1 && subtitle) {
                 const ul = document.createElement('ul');
-                ul.style.margin = '0';
-                ul.style.paddingLeft = '0';
-                const minLevel = Math.min(...[...headings].map(h => parseInt(h.tagName[1])));
+                ul.className = 'index';
+                const minLevel = Math.min(...headings.map(h => parseInt(h.tagName[1])));
                 headings.forEach((h, i) => {
                     const id = 'heading-' + i;
                     h.id = id;
                     const li = document.createElement('li');
-                    const level = parseInt(h.tagName[1]) - minLevel;
-                    li.style.marginLeft = (level * 0.6) + 'em';
-                    li.style.listStyle = 'none';
+                    li.style.setProperty('--heading-depth', parseInt(h.tagName[1]) - minLevel);
                     const a = document.createElement('a');
                     const text = h.querySelector('span') ? h.querySelector('span').textContent : h.textContent;
                     a.textContent = text.trim();
@@ -574,7 +566,7 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
                 const box = document.createElement('details');
                 box.className = 'note-toc';
                 const summary = document.createElement('summary');
-                summary.textContent = 'In this note';
+                summary.textContent = 'Contents';
                 box.appendChild(summary);
                 box.appendChild(ul);
                 const wide = matchMedia('(min-width: 761px)');
@@ -952,7 +944,7 @@ func parsePage(s string) int {
 
 func searchBoxHTML(basePath, q string) string {
 	return fmt.Sprintf(`<form class="search" method="get" action="%s/">`+
-		`<input id="note-search" type="search" name="q" value="%s" placeholder="Search…"></form>`,
+		`<input id="note-search" type="search" name="q" value="%s" placeholder="Search…" aria-label="Search notes"></form>`,
 		basePath, html.EscapeString(q))
 }
 
@@ -1224,6 +1216,75 @@ var md = goldmark.New(
 var legacyEpigraphRe = regexp.MustCompile(`(?s)<div class="epigraph">\s*<blockquote>.*?</blockquote>\s*</section>`)
 var mindmapRe = regexp.MustCompile(`(?s)<pre class="mindmap"[^>]*>.*?</pre>`)
 
+var strippedSrcBlockRe = regexp.MustCompile(`(?s)(?:^|[^>])<code>([^<]*\n[^<]*)</code>`)
+
+// restoreSrcBlocks turns multi-line inline code back into source blocks.
+func restoreSrcBlocks(body string) string {
+	return strippedSrcBlockRe.ReplaceAllStringFunc(body, func(m string) string {
+		lead := ""
+		if !strings.HasPrefix(m, "<code>") {
+			lead, m = m[:1], m[1:]
+		}
+		return lead + `<pre class="code">` + m + `</pre>`
+	})
+}
+
+var sidenoteRe = regexp.MustCompile(`<label for="[^"]*" class="margin-toggle sidenote-number"></label>\s*<input type="checkbox" id="[^"]*" class="margin-toggle"\s*/?>\s*<span class="sidenote">`)
+
+// sidenotesToFootnotes turns sidenotes into numbered references whose
+// texts are listed in a footer at the end of the note.  Footnote ids
+// are unique to the note, so several notes can share a page.
+func sidenotesToFootnotes(content string) string {
+	if !sidenoteRe.MatchString(content) {
+		return content
+	}
+	sum := sha256.Sum256([]byte(content))
+	prefix := "fn-" + hex.EncodeToString(sum[:3])
+	var b, notes strings.Builder
+	rest := content
+	for n := 1; ; n++ {
+		loc := sidenoteRe.FindStringIndex(rest)
+		if loc == nil {
+			break
+		}
+		body, after, ok := spanBody(rest[loc[1]:])
+		if !ok {
+			break
+		}
+		fmt.Fprintf(&b, `%s<sup class="footnote-ref"><a href="#%s-%d" id="%s-ref-%d">%d</a></sup>`,
+			rest[:loc[0]], prefix, n, prefix, n, n)
+		fmt.Fprintf(&notes, `<li id="%s-%d">%s <a class="footnote-back" href="#%s-ref-%d" aria-label="Back to text">↩</a></li>`,
+			prefix, n, restoreSrcBlocks(strings.TrimSpace(body)), prefix, n)
+		rest = after
+	}
+	b.WriteString(rest)
+	out := b.String()
+	footer := `<footer class="footnotes"><ol>` + notes.String() + `</ol></footer>`
+	trimmed := strings.TrimRight(out, " \t\n")
+	if strings.HasSuffix(trimmed, "</article>") {
+		return strings.TrimSuffix(trimmed, "</article>") + footer + "</article>\n"
+	}
+	return out + footer
+}
+
+// spanBody splits s, which follows an opening span tag, into the span's
+// contents and the text after its matching closing tag.
+func spanBody(s string) (body, after string, ok bool) {
+	depth := 1
+	for i := 0; i < len(s); i++ {
+		switch {
+		case strings.HasPrefix(s[i:], "</span>"):
+			depth--
+			if depth == 0 {
+				return s[:i], s[i+len("</span>"):], true
+			}
+		case strings.HasPrefix(s[i:], "<span") && (len(s) == i+5 || s[i+5] == '>' || s[i+5] == ' '):
+			depth++
+		}
+	}
+	return "", "", false
+}
+
 // repairLegacyEpigraphs repairs flat epigraphs closed with a section tag.
 func repairLegacyEpigraphs(content string) string {
 	return legacyEpigraphRe.ReplaceAllStringFunc(content, func(block string) string {
@@ -1247,6 +1308,7 @@ func noteToHTML(content, basePath string, isKnownID func(string) bool) string {
 		out = buf.String()
 	}
 	out = repairLegacyEpigraphs(out)
+	out = sidenotesToFootnotes(out)
 	out = mindmapRe.ReplaceAllString(out, `<div class="mindmap-frame">${0}</div>`)
 	out = rewriteFileLinks(out, basePath, isKnownID)
 	out = rewriteAttachmentLinks(out, basePath)

@@ -464,7 +464,7 @@ checkbox pattern."
                (org-export-data
                 (org-export-get-footnote-definition footnote-reference info)
                 info)))
-         (def (replace-regexp-in-string "</?p[^>]*>" "" def)))
+         (def (replace-regexp-in-string "</?p\\b[^>]*>" "" def)))
     (format
      (concat "<label for=\"%s\" class=\"margin-toggle sidenote-number\"></label>"
              "<input type=\"checkbox\" id=\"%s\" class=\"margin-toggle\"/>"
@@ -478,7 +478,7 @@ Any other link falls through to the standard HTML transcoder."
     (if (and (string= (org-element-property :type link) "fuzzy")
              (string= (car path) "mn"))
         (let ((id (format "mn-%s" (or (cadr path) (random 1000000))))
-              (text (replace-regexp-in-string "</?p[^>]*>" "" (or desc ""))))
+              (text (replace-regexp-in-string "</?p\\b[^>]*>" "" (or desc ""))))
           (format
            (concat "<label for=\"%s\" class=\"margin-toggle\">&#8853;</label>"
                    "<input type=\"checkbox\" id=\"%s\" class=\"margin-toggle\"/>"

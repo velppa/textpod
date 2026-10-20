@@ -27,7 +27,7 @@ func TestBlogIndexViews(t *testing.T) {
 		name, target, view, label string
 		wantEmpty                 bool
 	}{
-		{"home", "/notes/", "home-view", "Part A / The notebook", false},
+		{"home", "/notes/", "home-view", "", false},
 		{"search", "/notes/?q=entry-03", "archive-view", "Search / 1 matching notes", false},
 		{"archive", "/notes/?page=2", "archive-view", "Archive / Page 2 of 2", false},
 		{"no matches", "/notes/?q=missing", "archive-view", "Search / 0 matching notes", true},
@@ -38,12 +38,16 @@ func TestBlogIndexViews(t *testing.T) {
 			body := rec.Body.String()
 			for _, want := range []string{
 				`class="` + tc.view + `"`, tc.label,
-				`<dd>12 notes</dd>`, `<dd>12.10.2026</dd>`,
-				`for="note-search"`, `id="note-search"`, `action="/notes/"`,
-				`href="/notes/"`, `href="/notes/#search"`, `href="#notes"`,
+				`aria-label="Search notes"`, `id="note-search"`, `action="/notes/"`,
+				`href="/notes/"`, `href="/vinboard/"`, `href="/youtube-summaries/"`, `href="/"`, `<span>Vinboard</span>`,
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("missing %q", want)
+				}
+			}
+			for _, gone := range []string{`class="hero"`, "Part A", "Look something up", "A word, a topic", "#search"} {
+				if strings.Contains(body, gone) {
+					t.Errorf("page still renders %q", gone)
 				}
 			}
 			if strings.Contains(body, "{{") {
@@ -60,7 +64,7 @@ func TestBlogEmptyArchive(t *testing.T) {
 	s := newTestServer(nil)
 	rec := httptest.NewRecorder()
 	s.index(rec, httptest.NewRequest("GET", "/", nil))
-	for _, want := range []string{`<dd>0 notes</dd>`, `<dd>Not yet</dd>`, `class="empty-state"`} {
+	for _, want := range []string{`class="empty-state"`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("empty archive missing %q", want)
 		}
@@ -79,7 +83,7 @@ func TestBlogNotePageNavigation(t *testing.T) {
 	s.notePage(rec, req)
 	for _, want := range []string{
 		`class="note-page"`, `aria-label="Main navigation"`,
-		`href="/notes/"`, `href="/notes/#notes"`, `href="/notes/#search"`,
+		`href="/notes/"`, `href="/vinboard/"`, `href="/youtube-summaries/"`, `href="/"`,
 		`<main id="notes">`, `<section id="noteView" class="note">`,
 		`Original content.`, `A note | Hotter`,
 		`/notes/theme/paper-305-tile.jpg`, `/notes/theme/starve-050.webp`,
@@ -87,6 +91,22 @@ func TestBlogNotePageNavigation(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("note page missing %q", want)
 		}
+	}
+}
+
+func TestBlogNotePagePermalinkUnderTitle(t *testing.T) {
+	s := newTestServer([]Note{{
+		ID: "42", Timestamp: "2026-10-06 12:00:00",
+		Content: "# A note", HTML: `<h1>A note</h1><p>Body.</p>`,
+	}})
+	s.BasePath = "/notes"
+	req := httptest.NewRequest("GET", "/notes/note/42", nil)
+	req.SetPathValue("id", "42")
+	rec := httptest.NewRecorder()
+	s.notePage(rec, req)
+	want := `<h1>A note</h1><p class="subtitle"><a href="/notes/note/42"><time datetime="2026-10-06 12:00:00">`
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("note page lacks the timestamp permalink right under the title")
 	}
 }
 
@@ -151,5 +171,43 @@ func TestNoteToHTMLWrapsMindmaps(t *testing.T) {
 	want := "<section><p>Before.</p><div class=\"mindmap-frame\"><pre class=\"mindmap\">  root ─┬─ branch\n        ╰─ leaf</pre></div><pre class=\"code\">Code.</pre><p>After.</p></section>"
 	if got := noteToHTML(input, "", nil); got != want {
 		t.Errorf("mindmap rendering = %q, want %q", got, want)
+	}
+}
+
+func TestNoteToHTMLMovesSidenotesToFootnotes(t *testing.T) {
+	input := `<article><h1>T</h1><section><p>One<label for="sn-1" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-1" class="margin-toggle"/><span class="sidenote">First <span class="x">nested</span>.</span> two<label for="sn-2" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-2" class="margin-toggle"/><span class="sidenote">Code:
+<pre class="code"><code>(+ 1 2)
+</code></pre></span>.</p></section></article>
+`
+	got := noteToHTML(input, "", nil)
+	for _, want := range []string{
+		`One<sup class="footnote-ref"><a href="#fn-`, `-1">1</a></sup> two<sup class="footnote-ref">`,
+		`<footer class="footnotes"><ol><li id="fn-`, `First <span class="x">nested</span>. <a class="footnote-back"`,
+		"Code:\n<pre class=\"code\"><code>(+ 1 2)\n</code></pre> <a class=\"footnote-back\"",
+		`</ol></footer></article>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("footnotes missing %q in %q", want, got)
+		}
+	}
+	for _, gone := range []string{"margin-toggle", `class="sidenote"`} {
+		if strings.Contains(got, gone) {
+			t.Errorf("rendered note still contains %q", gone)
+		}
+	}
+	stripped := `<p>A<label for="sn-1" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-1" class="margin-toggle"/><span class="sidenote">Uses <code>f</code>:
+
+<code>(f 1)
+(f 2)
+</code></span>.</p>`
+	got = noteToHTML(stripped, "", nil)
+	if !strings.Contains(got, "Uses <code>f</code>:\n\n<pre class=\"code\"><code>(f 1)\n(f 2)\n</code></pre>") {
+		t.Errorf("multi-line footnote code is not a source block: %q", got)
+	}
+	if strings.Contains(got, `<pre class="code"><code>f</code>`) {
+		t.Error("inline footnote code became a source block")
+	}
+	if plain := "<p>No notes.</p>"; noteToHTML(plain, "", nil) != plain {
+		t.Error("note without sidenotes changed")
 	}
 }
