@@ -1,0 +1,635 @@
+/* Clay: cream paper, a peach header band, serif titles and one narrow
+ * column of text, after albertodenia.com. */
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..900&display=swap");
+
+:root {
+    color-scheme: light dark;
+    --orange-50: oklch(98% .016 73.684);
+    --orange-100: oklch(95.4% .038 75.164);
+    --orange-200: oklch(90.1% .076 70.697);
+    --orange-500: oklch(70.5% .213 47.604);
+    --orange-600: oklch(64.6% .222 41.116);
+    --stone-300: oklch(86.9% .005 56.366);
+    --stone-400: oklch(70.9% .01 56.259);
+    --stone-500: oklch(55.3% .013 58.071);
+    --stone-600: oklch(44.4% .011 73.639);
+    --stone-800: oklch(26.8% .007 34.298);
+    --zinc-300: oklch(87.1% .006 286.286);
+    --zinc-400: oklch(70.5% .015 286.067);
+    --sky-300: oklch(82.8% .111 230.318);
+    --bg-color: var(--orange-50);
+    --band-color: var(--orange-100);
+    --color: var(--stone-800);
+    --muted: var(--stone-400);
+    --accent: var(--orange-600);
+    --rule: var(--stone-800);
+    --code-bg: color-mix(in oklab, var(--stone-300) 30%, transparent);
+    --subtle: var(--zinc-400);
+    --soft: var(--stone-500);
+    --secondary: var(--stone-600);
+    --hairline: var(--stone-300);
+    --table-rule: var(--zinc-300);
+    --quote-bg: color-mix(in oklab, var(--sky-300) 10%, transparent);
+    --pill-hover: var(--orange-500);
+    --on-pill-hover: var(--orange-50);
+    --selection: var(--orange-200);
+    --text-width: 40rem;
+    --gutter: 1.25rem;
+    --radius-xl: .75rem;
+    --radius-lg: .5rem;
+    --font-serif: "Fraunces", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-code: var(--font-mono);
+}
+
+/* Dark: warm charcoal paper, a darker band, cream text and the same
+ * orange accent, a step lighter. */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --stone-100: oklch(97% .001 106.424);
+        --stone-200: oklch(92.3% .003 48.717);
+        --stone-700: oklch(37.4% .01 67.558);
+        --stone-900: oklch(21.6% .006 56.043);
+        --stone-950: oklch(14.7% .004 49.25);
+        --orange-400: oklch(75% .183 55.934);
+        --bg-color: oklch(19% .008 56);
+        --band-color: oklch(24.5% .016 58);
+        --color: var(--stone-200);
+        --muted: var(--stone-500);
+        --accent: var(--orange-400);
+        --rule: oklch(55% .012 58);
+        --code-bg: color-mix(in oklab, var(--stone-700) 45%, transparent);
+        --subtle: var(--stone-500);
+        --soft: var(--stone-400);
+        --secondary: var(--stone-300);
+        --hairline: var(--stone-700);
+        --table-rule: var(--stone-700);
+        --quote-bg: color-mix(in oklab, var(--sky-300) 9%, transparent);
+        --pill-hover: var(--orange-400);
+        --on-pill-hover: var(--stone-950);
+        --selection: color-mix(in oklab, var(--orange-500) 40%, transparent);
+    }
+}
+
+*, ::before, ::after { box-sizing: border-box; }
+
+html {
+    font-size: 18px;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    scroll-behavior: smooth;
+    scroll-padding-top: 1.5rem;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100svh;
+    margin: 0;
+    color: var(--color);
+    background: var(--bg-color);
+    font-family: var(--font-sans);
+}
+
+a { color: inherit; }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
+::selection { background: var(--selection); }
+
+img, video, svg { max-width: 100%; height: auto; }
+
+button {
+    padding: .25rem .75rem;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: var(--band-color);
+    color: inherit;
+    font: inherit;
+    font-size: .75rem;
+    cursor: pointer;
+}
+button:hover { border-color: var(--pill-hover); background: var(--pill-hover); color: var(--on-pill-hover); }
+
+.wrap {
+    width: 100%;
+    max-width: calc(var(--text-width) + 2 * var(--gutter));
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+}
+
+.skip-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 30;
+    padding: .5rem 1rem;
+    border-radius: var(--radius-lg);
+    background: var(--color);
+    color: var(--bg-color);
+    transform: translateY(-200%);
+}
+.skip-link:focus { transform: translateY(0); }
+
+/* Header: a peach band with the name, a round mark on its lower edge,
+ * then the navigation between two rules. */
+.site-band {
+    border-bottom: 1px solid var(--rule);
+    background: var(--band-color);
+}
+
+.band-inner {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 6.5rem;
+}
+
+.site-brand {
+    display: flex;
+    padding-block: 1.25rem;
+    text-decoration: none;
+}
+.brand-text { display: flex; flex-direction: column; }
+.brand-name {
+    font: 700 1.875rem/1.25 var(--font-serif);
+}
+.brand-tagline { font-size: 1.125rem; line-height: 1.25; }
+
+.site-mark {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    width: 7rem;
+    height: 7rem;
+    border: 1px solid var(--rule);
+    border-radius: 50%;
+    background: var(--bg-color);
+    color: var(--color);
+    transform: translate(-50%, calc(-50% + .75rem));
+}
+.site-mark svg { width: 2.75rem; height: 2.75rem; }
+.site-mark:hover { color: var(--accent); }
+
+.site-nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .5rem 2.75rem;
+    margin-top: 1.75rem;
+    padding-block: .25rem;
+    border-block: 1px solid var(--rule);
+    font-size: .875rem;
+    text-transform: uppercase;
+}
+.site-nav a {
+    position: relative;
+    text-decoration: none;
+    transition: color .15s;
+}
+.site-nav a:hover { color: var(--accent); }
+.site-nav a.selected::before,
+.site-nav a.selected::after {
+    content: "∙";
+    position: absolute;
+}
+.site-nav a.selected::before { right: calc(100% + .35rem); }
+.site-nav a.selected::after { left: calc(100% + .35rem); }
+
+main { flex: 1; margin-bottom: .5rem; }
+.note-page main { margin-top: 1.75rem; }
+
+/* Search, then the posts grouped by year. */
+.archive-head {
+    display: flex;
+    margin-top: 1.75rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .75rem;
+    margin-bottom: 1.25rem;
+}
+.archive-head > div:first-child:not(:has(.list-label)) { display: none; }
+.list-label { margin: 0; color: var(--muted); font-size: .875rem; font-weight: 700; }
+.archive-search { flex: 1 1 14rem; }
+form.search { margin: 0; }
+form.search input[type="search"] {
+    width: 100%;
+    padding: .3rem .85rem;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: var(--band-color);
+    color: var(--color);
+    font: inherit;
+    font-size: .875rem;
+}
+form.search input::placeholder { color: var(--soft); }
+
+.post-year {
+    margin: 1.25rem 0 .5rem;
+    color: var(--muted);
+    font-size: .875rem;
+    font-weight: 700;
+}
+
+a.post {
+    display: flex;
+    gap: 1rem;
+    margin-inline: -.75rem;
+    padding: .75rem;
+    border-radius: var(--radius-xl);
+    text-decoration: none;
+}
+a.post:hover { background: var(--band-color); }
+a.post:hover :is(.post-title, .post-summary) { color: var(--accent); }
+.post-text { flex: 1; min-width: 0; }
+.post-head { display: flex; align-items: baseline; gap: .5rem; }
+.post-title {
+    margin: 0 0 .25rem;
+    font: 700 1.125rem/1.5 var(--font-serif);
+    overflow-wrap: anywhere;
+}
+.post-date {
+    flex: 1 0 auto;
+    margin-bottom: .5rem;
+    color: var(--muted);
+    font-size: .875rem;
+    text-align: end;
+}
+.post-summary {
+    margin: 0;
+    font-size: .875rem;
+    hyphens: auto;
+    overflow-wrap: anywhere;
+}
+.post-thumb {
+    flex: none;
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: var(--radius-xl);
+    object-fit: cover;
+}
+
+.empty-state { color: var(--muted); }
+
+nav.pager {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-block: 2rem;
+    font-size: .875rem;
+}
+nav.pager a { text-underline-offset: 2px; }
+nav.pager a:hover { color: var(--accent); text-decoration: none; }
+nav.pager .page-of { color: var(--muted); }
+
+.site-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: .5rem 1rem;
+    margin-block: 1.25rem;
+    color: var(--muted);
+    font-size: .875rem;
+}
+.site-footer a { text-underline-offset: 3px; text-decoration: none; }
+.site-footer a:hover { text-decoration: underline; }
+
+@media (max-width: 639px) {
+    .band-inner { min-height: 0; }
+    .brand-name { font-size: 1.5rem; }
+    .brand-tagline { font-size: 1rem; }
+    .band-inner { gap: .75rem; }
+    .site-mark {
+        position: static;
+        order: -1;
+        flex: none;
+        width: 4.5rem;
+        height: 4.5rem;
+        margin: .5rem 0 .5rem -.25rem;
+        transform: none;
+    }
+    .site-mark svg { width: 2rem; height: 2rem; }
+    nav.wrap { padding-inline: 0; }
+    .site-nav {
+        flex-wrap: nowrap;
+        justify-content: safe center;
+        gap: 1.5rem;
+        margin-top: 0;
+        padding-inline: 1.25rem;
+        overflow-x: auto;
+        border-top: 0;
+        white-space: nowrap;
+        scrollbar-width: none;
+    }
+    a.post { margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); border-radius: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+}
+
+/* Note prose: serif headings, generous spacing, rounded code and images. */
+
+/* The note spans the page; text sits in the middle column and the
+ * contents sidebar in the right one. */
+section.note {
+    container-type: inline-size;
+    display: grid;
+    grid-template-columns: minmax(var(--gutter), 1fr) minmax(0, var(--text-width)) minmax(var(--gutter), 1fr);
+    align-items: start;
+    margin-bottom: 1.25rem;
+}
+
+section.note > article { display: contents; }
+
+section.note > *, section.note > article > * {
+    grid-column: 2;
+    min-width: 0;
+}
+
+/* Index pages list several notes; each sits in the column. */
+#notes > section.note + section.note { margin-top: 2.5rem; }
+
+section.note :is(p, ul, ol, pre, blockquote, table, dl, figure, details, .mindmap-frame) {
+    margin-top: 0;
+    margin-bottom: 1.25rem;
+}
+
+section.note p { hyphens: auto; overflow-wrap: anywhere; }
+@media (min-width: 640px) { section.note p { hyphens: none; } }
+
+section.note a { text-underline-offset: 2px; }
+section.note a:hover { color: var(--accent); text-decoration: none; }
+
+section.note :is(h1, h2, h3, h4, h5, h6) {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: .5em;
+    margin: 2.25rem 0 1.25rem;
+    font-family: var(--font-serif);
+    font-weight: 700;
+    overflow-wrap: break-word;
+}
+
+section.note :is(h1, h2, h3, h4, h5, h6) > span {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+section.note h1 { font-size: 2.25rem; line-height: 1.11; text-wrap: balance; }
+section.note h2 { font-size: 1.875rem; line-height: 1.2; }
+section.note h3 { font-size: 1.5rem; line-height: 1.33; }
+section.note h4 { font-size: 1.25rem; line-height: 1.4; }
+section.note :is(h5, h6) { font-size: 1.125rem; line-height: 1.55; }
+
+section.note > :is(h1, h2, h3, h4, h5, h6):first-child,
+section.note > article > :is(h1, h2, h3, h4, h5, h6):first-child,
+section.note p.note-tags + :is(h1, h2, h3, h4, h5, h6) {
+    margin-top: 0;
+    font-size: 2.25rem;
+    line-height: 1.11;
+}
+
+/* Tags: rounded pills, above the title on a note page. */
+section.note .tags { flex: 0 0 auto; margin-left: auto; }
+section.note p.note-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin: 0 0 .75rem;
+}
+
+a.tag {
+    display: inline-block;
+    padding: .25rem .5rem;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: var(--band-color);
+    color: var(--color);
+    font: 400 .75rem/1.33 var(--font-sans);
+    letter-spacing: 0;
+    text-decoration: none;
+    transition: background-color .15s, color .15s, border-color .15s;
+}
+a.tag:hover,
+section.note a.tag:hover {
+    border-color: var(--pill-hover);
+    background: var(--pill-hover);
+    color: var(--on-pill-hover);
+}
+
+/* Date and actions, small and grey, right under the title. */
+section.note p.subtitle {
+    margin: -1rem 0 2rem;
+    color: var(--subtle);
+    font-size: .875rem;
+    line-height: 1.43;
+}
+section.note p.subtitle a { color: inherit; text-decoration: none; }
+section.note p.subtitle a:hover { color: var(--accent); text-decoration: underline; }
+
+section.note :is(ul, ol) { margin-left: 1.5rem; padding: 0; list-style-position: outside; }
+section.note :is(ul, ol) :is(ul, ol) { margin-bottom: 0; padding-top: .5rem; }
+section.note li { margin-bottom: .5rem; }
+section.note li > p { margin-bottom: .5rem; }
+
+section.note hr {
+    width: 50%;
+    margin: 2.5rem auto;
+    border: 0;
+    border-top: 1px solid var(--hairline);
+}
+
+section.note :is(img, figure) { border-radius: var(--radius-xl); }
+section.note img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
+section.note figure { margin-block: 1.75rem; }
+section.note figure img { margin-bottom: .75rem; }
+section.note figcaption {
+    color: var(--subtle);
+    font-size: .875rem;
+    text-align: center;
+    text-wrap: balance;
+}
+
+section.note blockquote,
+section.note .epigraph blockquote {
+    margin: 2rem 0;
+    padding: 1rem;
+    border-left: 14px solid var(--quote-bg);
+    border-radius: var(--radius-xl);
+    background: var(--quote-bg);
+}
+section.note blockquote > :last-child { margin-bottom: 0; }
+section.note blockquote footer { color: var(--soft); font-size: .875rem; }
+
+/* Code: a soft grey panel for blocks, a small chip for inline code. */
+section.note :is(pre, code) {
+    font-family: var(--font-code);
+    font-size: .9375rem;
+    hyphens: none;
+    tab-size: 4;
+}
+section.note pre {
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 1rem;
+    border-radius: var(--radius-xl);
+    background: var(--code-bg);
+    color: var(--color);
+    line-height: 1.6;
+}
+section.note pre code { font-size: inherit; }
+section.note :not(pre) > code {
+    padding: .125rem .25rem;
+    border-radius: var(--radius-lg);
+    background: var(--code-bg);
+    white-space: pre-wrap;
+}
+
+/* Folded src blocks and sub-headings. */
+section.note details > summary {
+    cursor: pointer;
+    font-weight: 700;
+}
+section.note details > summary:hover { color: var(--accent); }
+section.note details[open] > summary { margin-bottom: .75rem; }
+
+section.note table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: .875rem;
+}
+section.note :is(th, td) {
+    padding: .5rem 1rem;
+    border-color: var(--table-rule);
+    vertical-align: top;
+    white-space: nowrap;
+}
+section.note th { border-bottom: 1px solid var(--table-rule); font-weight: 600; text-align: left; }
+section.note td { border-top: 1px solid var(--table-rule); }
+section.note :is(td + td, th + th) { border-left: 1px solid var(--table-rule); }
+
+/* Key/value rows: small grey labels beside wrapping values. */
+section.note dl {
+    display: grid;
+    grid-template-columns: fit-content(30%) minmax(0, 1fr);
+    gap: .25rem 1.25rem;
+}
+section.note dl :is(dt, dd) { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+section.note dl dt { grid-column: 1; color: var(--soft); font-size: .875rem; line-height: 1.7; }
+section.note dl dd { grid-column: 2; }
+
+/* Diagrams keep their natural width, centered on the page. */
+section.note .mindmap-frame {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    width: 100cqw;
+    max-width: 100cqw;
+    margin-inline: calc(50% - 50cqw);
+}
+section.note pre.mindmap {
+    width: max-content;
+    min-width: 0;
+    max-width: calc(100% - 2 * var(--gutter));
+    margin: 0;
+    font-size: .8rem;
+    line-height: 1.3;
+}
+
+/* Contents: in the right margin on wide screens, folded above the text otherwise. */
+section.note .note-toc {
+    grid-column: 3;
+    grid-row: 2 / span 2;
+    position: sticky;
+    top: 1.5rem;
+    max-width: 15rem;
+    max-height: calc(100vh - 3rem);
+    margin: 0 0 0 2.5rem;
+    overflow-y: auto;
+    font-size: .8rem;
+}
+section.note .note-content { grid-row: 3; }
+
+section.note .note-toc > summary {
+    color: var(--soft);
+    font-size: .875rem;
+    font-weight: 700;
+}
+.note-toc ul.index {
+    margin: .5rem 0 0;
+    padding: 0;
+    border-left: 1px solid var(--hairline);
+    list-style: none;
+}
+.note-toc ul.index li {
+    margin: 0;
+    padding: .15em 0 .15em calc(.6rem + var(--heading-depth, 0) * .75rem);
+}
+.note-toc a { display: block; color: var(--secondary); text-decoration: none; }
+section.note .note-toc a:hover { color: var(--accent); }
+
+@media (max-width: 1199px) {
+    section.note .note-toc {
+        grid-column: 2;
+        grid-row: auto;
+        position: static;
+        max-width: none;
+        max-height: none;
+        margin: 0 0 1.75rem;
+        padding: .75rem 1rem;
+        border-radius: var(--radius-xl);
+        background: var(--band-color);
+    }
+    section.note .note-content { grid-row: auto; }
+}
+
+/* Footnotes: numbered references, their texts listed after the note. */
+section.note sup.footnote-ref { font-size: .7em; line-height: 0; vertical-align: super; }
+section.note sup.footnote-ref a,
+section.note .footnote-back { padding-inline: .1em; text-decoration: none; }
+
+section.note footer.footnotes {
+    margin-top: 2.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--hairline);
+    font-size: .875rem;
+}
+section.note footer.footnotes ol { margin: 0 0 0 1.5rem; }
+section.note footer.footnotes li:target { border-radius: var(--radius-lg); background: var(--band-color); }
+section.note footer.footnotes pre { margin-block: .75rem; font-size: .8125rem; }
+
+/* Parts of the shared markup this design leaves out. */
+.brand-icon,
+.site-nav .eyebrow,
+.back-to-top,
+.date-long,
+.entry > section.note,
+section.note p.subtitle .tags { display: none; }
+
+/* The archive title stays for screen readers only. */
+.archive-head .display-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.theme-switch a[aria-current] { color: var(--color); }

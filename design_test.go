@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +38,8 @@ func TestBlogIndexViews(t *testing.T) {
 			for _, want := range []string{
 				`class="` + tc.view + `"`, tc.label,
 				`aria-label="Search notes"`, `id="note-search"`, `action="/notes/"`,
-				`href="/notes/"`, `href="/vinboard/"`, `href="/youtube-summaries/"`, `href="/"`, `<span>Vinboard</span>`,
+				`href="/notes/"`, `href="/vinboard/"`, `href="/youtube-summaries/"`, `href="/"`, `class="selected nav-notes" href="/notes/"`,
+				`class="site-footer wrap"`,
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("missing %q", want)
@@ -52,6 +52,9 @@ func TestBlogIndexViews(t *testing.T) {
 			}
 			if strings.Contains(body, "{{") {
 				t.Error("page contains an unresolved template placeholder")
+			}
+			if strings.Contains(body, `class="post-year">2026</h2>`) == tc.wantEmpty {
+				t.Error("post list does not match the search results")
 			}
 			if strings.Contains(body, `class="empty-state"`) != tc.wantEmpty {
 				t.Error("empty state does not match the search results")
@@ -86,7 +89,7 @@ func TestBlogNotePageNavigation(t *testing.T) {
 		`href="/notes/"`, `href="/vinboard/"`, `href="/youtube-summaries/"`, `href="/"`,
 		`<main id="notes">`, `<section id="noteView" class="note">`,
 		`Original content.`, `A note | Hotter`,
-		`/notes/theme/paper-305-tile.jpg`, `/notes/theme/starve-050.webp`,
+		`family=Fraunces`, `class="site-footer wrap"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("note page missing %q", want)
@@ -104,37 +107,41 @@ func TestBlogNotePagePermalinkUnderTitle(t *testing.T) {
 	req.SetPathValue("id", "42")
 	rec := httptest.NewRecorder()
 	s.notePage(rec, req)
-	want := `<h1>A note</h1><p class="subtitle"><a href="/notes/note/42"><time datetime="2026-10-06 12:00:00">`
+	want := `<h1>A note</h1><p class="subtitle"><a href="/notes/note/42"><time datetime="2026-10-06 12:00:00">` +
+		`<span class="date-long">2026-10-06 Tue 12:00:00</span><span class="date-short">Oct 6, 2026</span></time></a>`
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("note page lacks the timestamp permalink right under the title")
 	}
 }
 
-func TestThemeTextures(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.Handle("GET /theme/", http.FileServerFS(themeFiles))
-	handler := http.StripPrefix("/notes", mux)
-	for _, tc := range []struct {
-		name, contentType string
-		prefix            []byte
-	}{
-		{"paper-305-tile.jpg", "image/jpeg", []byte{0xff, 0xd8}},
-		{"paper-305-dark-tile.jpg", "image/jpeg", []byte{0xff, 0xd8}},
-		{"starve-050.webp", "image/webp", []byte("RIFF")},
+func TestBlogIndexListsPosts(t *testing.T) {
+	s := newTestServer([]Note{
+		{ID: "1", Timestamp: "2025-12-30 09:00:00", Content: "# Old", HTML: `<h1>Old</h1><dl><dt>k</dt><dd>v</dd></dl><p></p><p>First <b>words</b> &amp; more.</p>`},
+		{ID: "2", Timestamp: "2026-09-25 10:00:00", Content: "# New", HTML: `<h1>New</h1><p>` + strings.Repeat("long ", 60) + `</p><img src="/notes/assets/a.png" width="10">`},
+	})
+	s.BasePath = "/notes"
+	rec := httptest.NewRecorder()
+	s.index(rec, httptest.NewRequest("GET", "/notes/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<h2 class="post-year">2026</h2><div class="entry"><a class="post" href="/notes/note/2">`,
+		`<h3 class="post-title">New</h3><time class="post-date" datetime="2026-09-25 10:00:00">Sep 25</time>`,
+		`long long…</p></div><img class="post-thumb" src="/notes/assets/a.png" alt="" loading="lazy"></a><section class="note"><h1>New</h1><p class="subtitle">`,
+		`<h2 class="post-year">2025</h2><div class="entry"><a class="post" href="/notes/note/1">`,
+		`<p class="post-summary">First words &amp; more.</p></div></a><section class="note">`,
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest("GET", "/notes/theme/"+tc.name, nil))
-			if rec.Code != http.StatusOK {
-				t.Fatalf("texture returned status %d", rec.Code)
-			}
-			if got := rec.Header().Get("Content-Type"); got != tc.contentType {
-				t.Errorf("Content-Type = %q, want %q", got, tc.contentType)
-			}
-			if !bytes.HasPrefix(rec.Body.Bytes(), tc.prefix) {
-				t.Error("response is not the expected image format")
-			}
-		})
+		if !strings.Contains(body, want) {
+			t.Errorf("post list missing %q", want)
+		}
+	}
+}
+
+func TestInjectSubtitleRendersTagsBothWays(t *testing.T) {
+	got := injectSubtitle(`<h1><span>Title</span> <span class="tags"><a class="tag" href="?q=%3AEmacs%3A">Emacs</a></span></h1><p>Body.</p>`, "date")
+	want := `<p class="note-tags"><a class="tag" href="?q=%3AEmacs%3A">Emacs</a></p><h1><span>Title</span></h1>` +
+		`<p class="subtitle">date &middot; <span class="tags"><a class="tag" href="?q=%3AEmacs%3A">:Emacs:</a></span></p><p>Body.</p>`
+	if got != want {
+		t.Errorf("injectSubtitle = %q, want %q", got, want)
 	}
 }
 
@@ -209,5 +216,72 @@ func TestNoteToHTMLMovesSidenotesToFootnotes(t *testing.T) {
 	}
 	if plain := "<p>No notes.</p>"; noteToHTML(plain, "", nil) != plain {
 		t.Error("note without sidenotes changed")
+	}
+}
+
+func TestThemesShareMarkupAndSwapStylesheets(t *testing.T) {
+	s := newTestServer([]Note{{
+		ID: "42", Timestamp: "2026-10-06 12:00:00",
+		Content: "# A note", HTML: `<h1>A note</h1><p>Body.</p>`,
+	}})
+	s.BasePath = "/notes"
+	s.HTML = strings.ReplaceAll(s.HTML, "{{FAVICON}}", "data:image/svg+xml;base64,")
+	if len(themeCSS) < 2 || themeCSS["clay"] == "" || themeCSS["notebook"] == "" {
+		t.Fatalf("designs = %v, want clay and notebook", themeNames())
+	}
+	render := func(target, cookie string) (*httptest.ResponseRecorder, string) {
+		req := httptest.NewRequest("GET", target, nil)
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: "textpod_theme", Value: cookie})
+		}
+		rec := httptest.NewRecorder()
+		s.index(rec, req)
+		body := rec.Body.String()
+		return rec, body[:strings.Index(body, "<style>")] + body[strings.Index(body, "</style>"):]
+	}
+	cssOf := func(target, cookie string) string {
+		req := httptest.NewRequest("GET", target, nil)
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: "textpod_theme", Value: cookie})
+		}
+		rec := httptest.NewRecorder()
+		s.index(rec, req)
+		body := rec.Body.String()
+		return body[strings.Index(body, "<style>"):strings.Index(body, "</style>")]
+	}
+
+	if !strings.Contains(cssOf("/notes/", ""), "Clay:") {
+		t.Error("default design is not clay")
+	}
+	if !strings.Contains(cssOf("/notes/", "notebook"), "Notebook:") {
+		t.Error("design cookie is ignored")
+	}
+	if !strings.Contains(cssOf("/notes/", "bogus"), "Clay:") {
+		t.Error("unknown design cookie is not ignored")
+	}
+	s.Theme = "notebook"
+	if !strings.Contains(cssOf("/notes/", ""), "Notebook:") {
+		t.Error("--theme default is ignored")
+	}
+	s.Theme = ""
+
+	rec, _ := render("/notes/?theme=notebook", "")
+	if c := rec.Result().Cookies(); len(c) != 1 || c[0].Name != "textpod_theme" || c[0].Value != "notebook" || c[0].Path != "/notes" {
+		t.Errorf("?theme= cookie = %v", c)
+	}
+
+	_, clay := render("/notes/?theme=clay", "")
+	_, notebook := render("/notes/?theme=notebook", "")
+	normalize := func(page string) string {
+		page = strings.Replace(page, `<a href="?theme=clay" aria-current="true">`, `<a href="?theme=clay">`, 1)
+		return strings.Replace(page, `<a href="?theme=notebook" aria-current="true">`, `<a href="?theme=notebook">`, 1)
+	}
+	if normalize(clay) != normalize(notebook) {
+		t.Error("designs render different markup")
+	}
+	for _, want := range []string{`<a href="?theme=clay" aria-current="true">Clay</a>`, `<a href="?theme=notebook">Notebook</a>`} {
+		if !strings.Contains(clay, want) {
+			t.Errorf("design switch missing %q", want)
+		}
 	}
 }

@@ -41,19 +41,36 @@ var indexHTML string
 //go:embed favicon.svg
 var faviconSVG []byte
 
-//go:embed shared.css
-var sharedCSS string
-
-//go:embed blog.css
-var blogCSS string
+//go:embed themes/*.css
+var themeFiles embed.FS
 
 //go:embed theme/*.jpg theme/*.webp
-var themeFiles embed.FS
+var textureFiles embed.FS
+
+// themeCSS maps each design's name to its stylesheet.
+var themeCSS = loadThemes()
+
+const defaultTheme = "clay"
+
+func loadThemes() map[string]string {
+	entries, err := themeFiles.ReadDir("themes")
+	if err != nil {
+		log.Fatal(err)
+	}
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		data, err := themeFiles.ReadFile("themes/" + e.Name())
+		if err != nil {
+			log.Fatal(err)
+		}
+		out[strings.TrimSuffix(e.Name(), ".css")] = string(data)
+	}
+	return out
+}
 
 const noteSeparator = "\u000C"
 const contentLengthLimit = 500 * 1024 * 1024
 const timestampLayout = "2006-01-02 15:04:05"
-const timestampDisplayLayout = "2006-01-02 Mon 15:04:05"
 
 type Note struct {
 	ID        string `json:"id"`
@@ -70,6 +87,7 @@ type Config struct {
 	Token     string
 	HasToken  bool
 	BasePath  string
+	Theme     string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -114,6 +132,7 @@ func main() {
 	flag.StringVar(&cfg.NotesFile, "notes-file", "notes.md", "Save notes in FILE")
 	flag.StringVar(&cfg.Token, "token", "", "Require token for write access; without it the UI is read-only")
 	flag.StringVar(&cfg.BasePath, "base-path", "", "Base URL path prefix (e.g., /textpod)")
+	flag.StringVar(&cfg.Theme, "theme", defaultTheme, "Design shown unless the visitor picks another")
 	flag.StringVar(&cfg.OIDCIssuer, "oidc-issuer", "", "OIDC issuer URL, enables browser sign-in (e.g. https://auth.example.com/oidc)")
 	flag.StringVar(&cfg.OIDCClientID, "oidc-client-id", "", "OIDC client id")
 	flag.StringVar(&cfg.OIDCClientSecret, "oidc-client-secret", "", "OIDC client secret")
@@ -209,7 +228,7 @@ func main() {
 	mux.HandleFunc("GET /note/{id}", server.notePage)
 	mux.HandleFunc("POST /upload", server.uploadFile)
 	mux.HandleFunc("GET /assets/{name...}", server.getAsset)
-	mux.Handle("GET /theme/", http.FileServerFS(themeFiles))
+	mux.Handle("GET /theme/", http.FileServerFS(textureFiles))
 	mux.HandleFunc("PUT /assets/{name...}", server.putAsset)
 	mux.HandleFunc("HEAD /assets/{name...}", server.headAsset)
 	if provider != nil {
@@ -353,22 +372,15 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	notes = filterNotes(notes, search)
 	pageNotes, page, pages := paginateNotes(notes, page, pageSize)
 
-	var b strings.Builder
-	for _, n := range pageNotes {
-		body := wrapH3InDetails(n.HTML)
-		link := fmt.Sprintf(`<a href="%s/note/%s"><time datetime="%s">%s</time></a>`,
-			s.BasePath, n.ID, n.Timestamp, formatTimestampWithDay(n.Timestamp))
-		b.WriteString(`<section class="note">`)
-		b.WriteString(injectSubtitle(body, link))
-		b.WriteString("</section>\n")
-	}
+	b := noteEntriesHTML(pageNotes, s.BasePath)
 	if len(pageNotes) == 0 {
 		b.WriteString(`<p class="empty-state">No notes found. Try another search.</p>`)
 	}
 
-	out := strings.ReplaceAll(s.HTML, "{{BLOG_CSS}}", blogCSS)
-	out = strings.ReplaceAll(out, "{{SHARED_CSS}}", sharedCSS)
+	theme := s.theme(w, r)
+	out := strings.ReplaceAll(s.HTML, "{{THEME_CSS}}", themeCSS[theme])
 	out = strings.ReplaceAll(out, "{{HEADER}}", blogHeader(s.BasePath))
+	out = strings.ReplaceAll(out, "{{FOOTER}}", siteFooter(s.BasePath, s.authLinkHTML(r), theme))
 	out = strings.ReplaceAll(out, "{{BASE_PATH}}", html.EscapeString(s.BasePath))
 	viewClass, indexLabel := "home-view", ""
 	if search != "" {
@@ -378,32 +390,143 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	out = strings.ReplaceAll(out, "{{VIEW_CLASS}}", viewClass)
 	if indexLabel != "" {
-		indexLabel = `<p class="eyebrow">` + indexLabel + `</p>`
+		indexLabel = `<p class="eyebrow list-label">` + indexLabel + `</p>`
 	}
 	out = strings.ReplaceAll(out, "{{INDEX_LABEL}}", indexLabel)
 	out = strings.ReplaceAll(out, "{{SEARCH_BOX}}", searchBoxHTML(s.BasePath, search))
 	out = strings.ReplaceAll(out, "{{NOTES}}", b.String())
 	out = strings.ReplaceAll(out, "{{PAGER}}", pagerHTML(s.BasePath, search, page, pages))
-	out = strings.ReplaceAll(out, "{{AUTH}}", s.authLinkHTML(r))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, out)
 }
 
-// blogHeader returns the blog's navigation and skip link.
+// blogHeader returns the blog's header, navigation and skip link.
 func blogHeader(basePath string) string {
 	home := html.EscapeString(basePath + "/")
+	mark := `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1v22M1 12h22M4.2 4.2l15.6 15.6M4.2 19.8L19.8 4.2" fill="none" stroke="currentColor" stroke-width="2.6"/></svg>`
 	return fmt.Sprintf(`<a class="skip-link eyebrow" href="#notes">Skip to notes</a>
 <header class="site-header">
-    <a class="site-brand" href="%s" aria-label="Hotter home">
-        <svg class="site-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1v22M1 12h22M4.2 4.2l15.6 15.6M4.2 19.8L19.8 4.2" fill="none" stroke="currentColor" stroke-width="3"/></svg>
-        <span>Hotter</span>
-    </a>
-    <nav class="site-nav" aria-label="Main navigation">
+    <div class="site-band"><div class="wrap band-inner">
+        <a class="site-brand" href="%s" aria-label="Hotter home"><span class="brand-icon">%s</span><span class="brand-text"><span class="brand-name">Hotter</span><span class="brand-tagline">Notes &amp; other things</span></span></a>
+        <a class="site-mark" href="%s" tabindex="-1" aria-hidden="true">%s</a>
+    </div></div>
+    <nav class="wrap" aria-label="Main navigation"><div class="site-nav">
+        <a class="selected nav-notes" href="%s" aria-current="page"><span class="eyebrow">00 / Notes</span><span>Notes</span></a>
         <a href="/vinboard/"><span class="eyebrow">01 / Board</span><span>Vinboard</span></a>
         <a href="/youtube-summaries/"><span class="eyebrow">02 / Videos</span><span>YouTube Summaries</span></a>
         <a href="/"><span class="eyebrow">03 / Hotter</span><span>Home</span></a>
-    </nav>
-</header>`, home)
+    </div></nav>
+</header>`, home, mark, home, mark, home)
+}
+
+// siteFooter returns the page footer: home link, sign-in markup auth,
+// the design switch with theme marked as current, and a link back up.
+func siteFooter(basePath, auth, theme string) string {
+	var designs strings.Builder
+	for i, name := range themeNames() {
+		if i > 0 {
+			designs.WriteString(" / ")
+		}
+		current := ""
+		if name == theme {
+			current = ` aria-current="true"`
+		}
+		fmt.Fprintf(&designs, `<a href="?theme=%s"%s>%s</a>`, name, current, strings.ToUpper(name[:1])+name[1:])
+	}
+	return fmt.Sprintf(`<footer class="site-footer wrap"><span><a class="footer-home" href="%s/"><span class="footer-copy">&copy; %d </span>Hotter</a>%s<span class="theme-switch"> &middot; Design: %s</span></span><a class="back-to-top" href="#top">Back to top ↑</a></footer>`,
+		html.EscapeString(basePath), time.Now().Year(), auth, designs.String())
+}
+
+// themeNames lists the designs in a stable order.
+func themeNames() []string {
+	names := make([]string, 0, len(themeCSS))
+	for name := range themeCSS {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// theme picks the design for the request: a valid ?theme= choice, which
+// is remembered in a cookie, else the remembered one, else the default.
+func (s *Server) theme(w http.ResponseWriter, r *http.Request) string {
+	cookiePath := "/"
+	if s.BasePath != "" {
+		cookiePath = s.BasePath
+	}
+	if name := r.URL.Query().Get("theme"); themeCSS[name] != "" {
+		http.SetCookie(w, &http.Cookie{Name: "textpod_theme", Value: name, Path: cookiePath,
+			MaxAge: 365 * 24 * 3600, SameSite: http.SameSiteLaxMode})
+		return name
+	}
+	if c, err := r.Cookie("textpod_theme"); err == nil && themeCSS[c.Value] != "" {
+		return c.Value
+	}
+	if themeCSS[s.Theme] != "" {
+		return s.Theme
+	}
+	return defaultTheme
+}
+
+var (
+	paragraphRe  = regexp.MustCompile(`(?is)<p(?:\s[^>]*)?>(.*?)</p>`)
+	firstImageRe = regexp.MustCompile(`(?is)<img\s[^>]*?src="([^"]+)"`)
+	htmlSpaceRe  = regexp.MustCompile(`\s+`)
+)
+
+const summaryLength = 180
+
+// noteEntriesHTML renders each note as an entry holding both a list row -
+// title, date, a one-line summary and the first image as a thumbnail - and
+// the full note.  Year headings separate the entries; each design shows
+// the parts it uses.
+func noteEntriesHTML(notes []Note, basePath string) *strings.Builder {
+	var b strings.Builder
+	year := ""
+	for _, n := range notes {
+		date := n.Timestamp
+		if t, err := time.Parse(timestampLayout, n.Timestamp); err == nil {
+			if y := t.Format("2006"); y != year {
+				year = y
+				fmt.Fprintf(&b, `<h2 class="post-year">%s</h2>`, y)
+			}
+			date = t.Format("Jan 2")
+		}
+		b.WriteString(`<div class="entry">`)
+		fmt.Fprintf(&b, `<a class="post" href="%s/note/%s"><div class="post-text"><div class="post-head">`+
+			`<h3 class="post-title">%s</h3><time class="post-date" datetime="%s">%s</time></div>`,
+			basePath, n.ID, html.EscapeString(noteTitle(&n)), n.Timestamp, date)
+		if summary := noteSummary(n.HTML); summary != "" {
+			fmt.Fprintf(&b, `<p class="post-summary">%s</p>`, html.EscapeString(summary))
+		}
+		b.WriteString(`</div>`)
+		if m := firstImageRe.FindStringSubmatch(n.HTML); m != nil {
+			fmt.Fprintf(&b, `<img class="post-thumb" src="%s" alt="" loading="lazy">`, m[1])
+		}
+		b.WriteString(`</a>`)
+		link := fmt.Sprintf(`<a href="%s/note/%s">%s</a>`, basePath, n.ID, timestampHTML(n.Timestamp))
+		b.WriteString(`<section class="note">`)
+		b.WriteString(injectSubtitle(wrapH3InDetails(n.HTML), link))
+		b.WriteString("</section></div>\n")
+	}
+	return &b
+}
+
+// noteSummary returns the plain text of the note's first non-empty
+// paragraph, cut to summaryLength runes.
+func noteSummary(noteHTML string) string {
+	for _, m := range paragraphRe.FindAllStringSubmatch(noteHTML, -1) {
+		text := html.UnescapeString(htmlTagStripRe.ReplaceAllString(m[1], ""))
+		text = strings.TrimSpace(htmlSpaceRe.ReplaceAllString(text, " "))
+		if text == "" {
+			continue
+		}
+		if r := []rune(text); len(r) > summaryLength {
+			text = strings.TrimSpace(string(r[:summaryLength])) + "…"
+		}
+		return text
+	}
+	return ""
 }
 
 func getCookieValue(r *http.Request, name string) (string, bool) {
@@ -499,12 +622,13 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title := html.EscapeString(noteTitle(note))
-	subtitleInner := fmt.Sprintf(`<a href="%s/note/%s"><time datetime="%s">%s</time></a> &middot; <a href="%s">back</a>`,
-		s.BasePath, note.ID, note.Timestamp, formatTimestampWithDay(note.Timestamp), s.BasePath)
+	subtitleInner := fmt.Sprintf(`<a href="%s/note/%s">%s</a> &middot; <a href="%s/">back</a>`,
+		s.BasePath, note.ID, timestampHTML(note.Timestamp), s.BasePath)
 	if s.canWrite(r) {
 		subtitleInner += ` &middot; <a href="#" id="deleteLink">delete</a>`
 	}
 	noteBody := injectSubtitle(note.HTML, subtitleInner)
+	theme := s.theme(w, r)
 	idJSON, _ := json.Marshal(note.ID)
 	basePathJSON, _ := json.Marshal(s.BasePath)
 	page := fmt.Sprintf(`<!DOCTYPE html>
@@ -514,17 +638,14 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
     <title>%s | Hotter</title>
     <meta name="color-scheme" content="light dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
-    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&amp;display=swap" rel="stylesheet">
     <style>
-        %s
-        %s
+%s
     </style>
 </head>
 <body class="note-page" id="top">
     %s
     <main id="notes"><section id="noteView" class="note">%s</section></main>
-    <footer class="site-footer"><span>Hotter%s</span><a href="#top">Back to top ↑</a></footer>
+    %s
     <script>
         (function() {
             const deleteLink = document.getElementById('deleteLink');
@@ -582,7 +703,7 @@ func (s *Server) notePage(w http.ResponseWriter, r *http.Request) {
         })();
     </script>
 </body>
-	</html>`, title, strings.ReplaceAll(blogCSS, "{{BASE_PATH}}", s.BasePath), sharedCSS, blogHeader(s.BasePath), noteBody, s.authLinkHTML(r),
+	</html>`, title, strings.ReplaceAll(themeCSS[theme], "{{BASE_PATH}}", s.BasePath), blogHeader(s.BasePath), noteBody, siteFooter(s.BasePath, s.authLinkHTML(r), theme),
 		basePathJSON, idJSON, basePathJSON)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, page)
@@ -1095,12 +1216,15 @@ func (s *Server) runDownloads(links [][2]string, noteID string) {
 	}
 }
 
-func formatTimestampWithDay(ts string) string {
+// timestampHTML renders TS as a <time> holding a long form with the
+// weekday and time and a short "Jan 2, 2006" form.
+func timestampHTML(ts string) string {
 	t, err := time.Parse(timestampLayout, ts)
 	if err != nil {
-		return ts
+		return fmt.Sprintf(`<time datetime="%s">%s</time>`, ts, ts)
 	}
-	return t.Format(timestampDisplayLayout)
+	return fmt.Sprintf(`<time datetime="%s"><span class="date-long">%s</span><span class="date-short">%s</span></time>`,
+		ts, t.Format("2006-01-02 Mon 15:04:05"), t.Format("Jan 2, 2006"))
 }
 
 var (
@@ -1110,7 +1234,6 @@ var (
 	headingCloseRe   = regexp.MustCompile(`(?i)</h[1-6]>`)
 	headingFullRe    = regexp.MustCompile(`(?is)(<h[1-6][^>]*>)(.*?)(</h[1-6]>)`)
 	headingTagsSpan  = regexp.MustCompile(`(?is)\s*<span class="tags">(.*?)</span>\s*`)
-	tagAnchorRe      = regexp.MustCompile(`(?is)<a class="tag" href="([^"]*)">([^<]+)</a>`)
 )
 
 // injectSubtitle inserts a Tufte-style <p class="subtitle">…</p> right
@@ -1120,43 +1243,25 @@ var (
 // stays clean and the tags live with the rest of the metadata.
 func injectSubtitle(noteHTML, inner string) string {
 	out := noteHTML
-	tagsInner := ""
 	if loc := headingFullRe.FindStringSubmatchIndex(out); loc != nil {
 		innerStart, innerEnd := loc[4], loc[5]
 		headInner := out[innerStart:innerEnd]
 		if m := headingTagsSpan.FindStringSubmatchIndex(headInner); m != nil {
 			tagsHTML := headInner[m[2]:m[3]]
-			tagsInner = formatTagsAsColons(tagsHTML)
+			pills := `<p class="note-tags">` + tagsHTML + `</p>`
+			if colons := formatTagsAsColons(tagsHTML); colons != "" {
+				inner += " &middot; " + colons
+			}
 			cleaned := headInner[:m[0]] + headInner[m[1]:]
-			out = out[:innerStart] + cleaned + out[innerEnd:]
+			out = out[:loc[0]] + pills + out[loc[0]:innerStart] + cleaned + out[innerEnd:]
 		}
 	}
-	combined := inner
-	if tagsInner != "" {
-		combined += " &middot; " + tagsInner
-	}
-	subtitle := `<p class="subtitle">` + combined + `</p>`
+	subtitle := `<p class="subtitle">` + inner + `</p>`
 	loc := headingCloseRe.FindStringIndex(out)
 	if loc == nil {
 		return subtitle + out
 	}
 	return out[:loc[1]] + subtitle + out[loc[1]:]
-}
-
-func formatTagsAsColons(tagsHTML string) string {
-	matches := tagAnchorRe.FindAllStringSubmatch(tagsHTML, -1)
-	if len(matches) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(matches))
-	for i, m := range matches {
-		text := m[2] + ":"
-		if i == 0 {
-			text = ":" + text
-		}
-		parts = append(parts, fmt.Sprintf(`<a class="tag" href="%s">%s</a>`, m[1], text))
-	}
-	return `<span class="tags">` + strings.Join(parts, "") + `</span>`
 }
 
 func noteTitle(n *Note) string {
@@ -1176,6 +1281,25 @@ func noteTitle(n *Note) string {
 		return s
 	}
 	return "Note"
+}
+
+var tagAnchorRe = regexp.MustCompile(`(?is)<a class="tag" href="([^"]*)">([^<]+)</a>`)
+
+// formatTagsAsColons rewrites tag links as one `:a:b:` run.
+func formatTagsAsColons(tagsHTML string) string {
+	matches := tagAnchorRe.FindAllStringSubmatch(tagsHTML, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(matches))
+	for i, m := range matches {
+		text := m[2] + ":"
+		if i == 0 {
+			text = ":" + text
+		}
+		parts = append(parts, fmt.Sprintf(`<a class="tag" href="%s">%s</a>`, m[1], text))
+	}
+	return `<span class="tags">` + strings.Join(parts, "") + `</span>`
 }
 
 func timestampToID(ts string) string {

@@ -8,17 +8,14 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="shortcut icon" href="{{FAVICON}}" />
-    <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
-    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&amp;display=swap" rel="stylesheet">
     <style>
-        {{BLOG_CSS}}
-        {{SHARED_CSS}}
+{{THEME_CSS}}
     </style>
 </head>
 
 <body class="{{VIEW_CLASS}}" id="top">
     {{HEADER}}
-    <section class="archive-head" aria-labelledby="archive-title">
+    <section class="archive-head wrap" aria-labelledby="archive-title">
         <div>
             {{INDEX_LABEL}}
             <h1 class="display-title" id="archive-title">Notes &amp;<br>other things.</h1>
@@ -27,9 +24,11 @@
             {{SEARCH_BOX}}
         </div>
     </section>
-    <main id="notes">{{NOTES}}</main>
-    {{PAGER}}
-    <footer class="site-footer"><span>Hotter{{AUTH}}</span><a href="#top">Back to top ↑</a></footer>
+    <main id="notes" class="wrap">
+        {{NOTES}}
+        {{PAGER}}
+    </main>
+    {{FOOTER}}
 </body>
 
 </html>
