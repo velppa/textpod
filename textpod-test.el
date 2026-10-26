@@ -247,6 +247,17 @@ they were treated as relative paths and never uploaded)."
                                         name)))))
       (delete-file tmp))))
 
+(ert-deftest textpod-test/upload-local-links-keeps-backslashes ()
+  "Links that stay put keep their backslashes verbatim."
+  (let ((html "<code>[\\[url]\\[title]](x)</code> <a href=\"C:\\nope\">a</a>"))
+    (should (equal (textpod--upload-local-links html "/base") html))))
+
+(ert-deftest textpod-test/details-summary-keeps-backslashes ()
+  "A details summary with backslashes survives the round trip."
+  (should (equal (textpod--wrap-details
+                  (textpod--process-details "#+DETAILS: a \\1 b\n"))
+                 "<details><summary>a \\1 b</summary>\n\n\n</details>")))
+
 
 ;;;; upload-asset hash comparison
 

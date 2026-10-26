@@ -187,7 +187,7 @@ and are replaced with HTML <details> tags by `textpod--wrap-details'."
        (let ((summary (match-string 1 match)))
          (setq counter (1+ counter))
          (format "TEXTPODDETAILSOPEN%d{%s}" counter summary)))
-     org-text)))
+     org-text t t)))
 
 (defun textpod--wrap-details (md)
   "Replace TEXTPOD_DETAILS markers in MD with HTML <details> tags.
@@ -203,7 +203,7 @@ Each marker opens a new <details> block; the previous one is closed."
                              (prefix (if has-open "</details>\n" "")))
                          (setq has-open t)
                          (format "%s<details><summary>%s</summary>\n" prefix summary)))
-                     md)))
+                     md t t)))
         (if has-open
             (concat result "\n</details>")
           result)))))
@@ -258,7 +258,7 @@ BASE-DIR is used to resolve relative src paths."
                            src w h rest))
                match))
          match)))
-   html))
+   html t t))
 
 (defun textpod--plz (method url &rest rest)
   "Request URL with METHOD via `plz', passing REST through.
@@ -342,7 +342,7 @@ link syntax (![...](...), [...](...)). Returns the modified string."
                    (let ((url (save-match-data (textpod--upload-asset abs-path))))
                      (format "%s=\"%s\"" attr url))
                  match)))
-           html))
+           html t t))
     ;; Second pass: markdown-style links (if any survive)
     (replace-regexp-in-string
      md-re
@@ -358,7 +358,7 @@ link syntax (![...](...), [...](...)). Returns the modified string."
                    (format "![%s](%s)" label url)
                  (format "[%s](%s)" label url)))
            match)))
-     html)))
+     html t t)))
 
 ;;;; Org export backend
 
