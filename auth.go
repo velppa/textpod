@@ -13,6 +13,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,6 +164,21 @@ func (c localCredentials) tokenUsers() map[string]string {
 	return out
 }
 
+// homeAuthLocalSecret is the secret home-auth demands from co-hosted
+// apps, empty when there is none.
+func homeAuthLocalSecret() string {
+	path := os.Getenv("HOME_AUTH_LOCAL_SECRET_FILE")
+	if path == "" {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".local", "state", "home-auth", "local-secret")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // fetchLocalCredentials asks a home-auth instance on this host for the
 // credentials of the client registered under name, so neither the
 // secret nor the API tokens have to live in the command line.  Retried
@@ -175,7 +192,12 @@ func fetchLocalCredentials(localURL, name string) (localCredentials, error) {
 	for attempt := 0; ; attempt++ {
 		var reachable bool
 		reachable, err = func() (bool, error) {
-			resp, err := http.Get(endpoint)
+			req, err := http.NewRequest("GET", endpoint, nil)
+			if err != nil {
+				return true, err
+			}
+			req.Header.Set("Authorization", "Bearer "+homeAuthLocalSecret())
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				return false, err
 			}

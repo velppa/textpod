@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -310,13 +312,18 @@ func TestNotePageDeleteLinkGated(t *testing.T) {
 }
 
 func TestFetchLocalCredentials(t *testing.T) {
-	var gotName string
+	secretFile := filepath.Join(t.TempDir(), "local-secret")
+	os.WriteFile(secretFile, []byte("lsecret\n"), 0o600)
+	t.Setenv("HOME_AUTH_LOCAL_SECRET_FILE", secretFile)
+
+	var gotName, gotAuth string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/local/client" {
 			http.Error(w, "not found", 404)
 			return
 		}
 		gotName = r.URL.Query().Get("name")
+		gotAuth = r.Header.Get("Authorization")
 		json.NewEncoder(w).Encode(map[string]any{
 			"issuer":    "https://auth.example/oidc",
 			"client_id": "textpod", "client_secret": "s3cret",
@@ -331,6 +338,9 @@ func TestFetchLocalCredentials(t *testing.T) {
 	}
 	if gotName != "Textpod" {
 		t.Errorf("name = %q, want Textpod", gotName)
+	}
+	if gotAuth != "Bearer lsecret" {
+		t.Errorf("Authorization = %q, want the local secret", gotAuth)
 	}
 	if creds.Issuer != "https://auth.example/oidc" ||
 		creds.ClientID != "textpod" || creds.ClientSecret != "s3cret" {
